@@ -1,0 +1,127 @@
+name: Collect and publish
+run-name: UA matrix for ${{ inputs.version || 'new stable Codex versions' }}
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact stable Codex version, for example 0.156.1; blank discovers new versions'
+        required: false
+        type: string
+
+# Serialize discovery through publication so two runs cannot publish the same version.
+concurrency:
+  group: ua-publication
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      needed: ${{ steps.discover.outputs.needed }}
+      version: ${{ steps.discover.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Discover a version to collect
+        id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: >-
+          python scripts/releases.py discover
+          --repository "$GITHUB_REPOSITORY"
+          --version "$REQUESTED_VERSION"
+
+  collect:
+    needs: discover
+    if: needs.discover.outputs.needed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: macos-arm64
+            runner: macos-15
+          - platform: windows-x64
+            runner: windows-2025
+          - platform: windows-arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Collect native client UAs
+        env:
+          CODEX_VERSION: ${{ needs.discover.outputs.version }}
+          COLLECT_PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: >-
+          python scripts/collect.py
+          --version "$CODEX_VERSION"
+          --platform "$COLLECT_PLATFORM"
+          --output ".local/$COLLECT_PLATFORM.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: platform-${{ matrix.platform }}
+          path: .local/${{ matrix.platform }}.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  publish:
+    needs: [discover, collect]
+    if: needs.discover.outputs.needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: platform-*
+          path: .local/records
+          merge-multiple: true
+      - name: Assemble the complete matrix
+        env:
+          CODEX_VERSION: ${{ needs.discover.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        run: >-
+          python scripts/matrix.py
+          --version "$CODEX_VERSION"
+          --input-dir .local/records
+          --output .local/ua-matrix.json
+          --collector-commit "$GITHUB_SHA"
+          --run-url "$RUN_URL"
+      - name: Publish the versioned release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODEX_VERSION: ${{ needs.discover.outputs.version }}
+        run: >-
+          python scripts/releases.py publish
+          --repository "$GITHUB_REPOSITORY"
+          --version "$CODEX_VERSION"
+          --asset .local/ua-matrix.json
+          --collector-commit "$GITHUB_SHA"

@@ -6,6 +6,9 @@ CLI and Exec client profiles for one stable Codex version. These are
 samples of the recorded runtime environments, not an exhaustive list of possible
 Codex User-Agents.
 
+For Desktop backend User-Agents, see
+[codex-desktop-ua](https://github.com/huweiATgithub/codex-desktop-ua).
+
 ## Download
 
 Fetch the compact matrix for a known Codex version:

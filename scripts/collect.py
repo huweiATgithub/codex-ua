@@ -20,8 +20,14 @@ import urllib.request
 
 
 TARGETS = {
-    "linux-x64": "x86_64-unknown-linux-musl",
-    "linux-arm64": "aarch64-unknown-linux-musl",
+    "linux-ubuntu-x64": "x86_64-unknown-linux-musl",
+    "linux-ubuntu-arm64": "aarch64-unknown-linux-musl",
+    "linux-debian-x64": "x86_64-unknown-linux-musl",
+    "linux-debian-arm64": "aarch64-unknown-linux-musl",
+    "linux-fedora-x64": "x86_64-unknown-linux-musl",
+    "linux-fedora-arm64": "aarch64-unknown-linux-musl",
+    "linux-alpine-x64": "x86_64-unknown-linux-musl",
+    "linux-alpine-arm64": "aarch64-unknown-linux-musl",
     "macos-x64": "x86_64-apple-darwin",
     "macos-arm64": "aarch64-apple-darwin",
     "windows-x64": "x86_64-pc-windows-msvc",
@@ -44,7 +50,13 @@ def native_platform():
     machine = platform.machine().lower()
     if system not in systems or machine not in architectures:
         raise RuntimeError(f"unsupported native platform: {system} {machine}")
-    return f"{systems[system]}-{architectures[machine]}"
+    family = systems[system]
+    if system == "Linux":
+        family = f"linux-{platform.freedesktop_os_release()['ID']}"
+    name = f"{family}-{architectures[machine]}"
+    if name not in TARGETS:
+        raise RuntimeError(f"unsupported native platform: {name}")
+    return name
 
 
 def source_url(version, platform_name):
@@ -292,8 +304,20 @@ def collect(version, platform_name, supplied_binary=None):
         "target": TARGETS[platform_name],
         "source_url": url,
         "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "os": {"system": platform.system(), "release": platform.release(), "version": platform.version(), "machine": platform.machine()},
-        "runner": {"name": os.environ.get("RUNNER_NAME", "local"), "image": os.environ.get("ImageOS", "unknown"), "image_version": os.environ.get("ImageVersion", "unknown")},
+        "os": {
+            "system": platform.system(), "release": platform.release(),
+            "version": platform.version(), "machine": platform.machine(),
+            "distribution": {
+                key.lower(): platform.freedesktop_os_release()[key]
+                for key in ("ID", "VERSION_ID", "PRETTY_NAME")
+            } if platform_name.startswith("linux-") else None,
+        },
+        "runner": {
+            "name": os.environ.get("RUNNER_NAME", "local"),
+            "image": os.environ.get("ImageOS", "unknown"),
+            "image_version": os.environ.get("ImageVersion", "unknown"),
+            "container_image": os.environ.get("COLLECT_CONTAINER_IMAGE") or None,
+        },
         "terminal": TERMINAL,
         "clients": {
             "interactive": {"user_agent": interactive, "method": "app-server-initialize"},

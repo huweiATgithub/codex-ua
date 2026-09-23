@@ -1,9 +1,10 @@
 # Codex UA matrices
 
-Collect User-Agent samples from official Codex CLI binaries on Linux, macOS,
-and Windows, on x64 and ARM64. Each matrix contains interactive and exec client
-profiles for one stable Codex version. These are samples of the recorded runtime
-environments, not an exhaustive list of possible Codex User-Agents.
+Collect User-Agent samples from official Codex CLI binaries on Ubuntu, Debian,
+Fedora, Alpine, macOS, and Windows, on x64 and ARM64. Each matrix contains
+interactive and exec client profiles for one stable Codex version. These are
+samples of the recorded runtime environments, not an exhaustive list of possible
+Codex User-Agents.
 
 ## Download
 
@@ -32,12 +33,13 @@ Both currently use `schema_version: 1` and identify the collected `codex_version
 `ua-matrix.json` follows the [matrix schema](schema/ua-matrix.schema.json).
 Its top-level fields are `schema_version`, `codex_version`, and `platforms`.
 
-`platforms` has six keys: `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64`,
-`windows-x64`, and `windows-arm64`. Each entry maps `interactive` and `exec`
-directly to UA strings. Read a UA using, for example:
+`platforms` has twelve keys: each of `linux-ubuntu`, `linux-debian`, `linux-fedora`,
+`linux-alpine`, `macos`, and `windows` paired with `-x64` and `-arm64`.
+Each entry maps `interactive` and `exec` directly to UA strings. Read a UA using,
+for example:
 
 ```text
-platforms["linux-x64"].interactive
+platforms["linux-debian-x64"].interactive
 platforms["windows-arm64"].exec
 ```
 
@@ -47,6 +49,11 @@ provenance, including the source commit and workflow run URL. Each platform reco
 its binary URL, collection time, OS and runner metadata, terminal environment,
 and `clients`. Each client has a `user_agent` and collection `method`; exec also
 includes `http_capture` with the UA and originator sent to the loopback server.
+
+On Linux, `os.distribution` records the `id`, `version_id`, and `pretty_name`
+from the runtime's `/etc/os-release`; it is `null` on other systems.
+`runner.container_image` records the container image tag, or `null` for native
+host collection. The other runner fields describe the host runner.
 
 The compact matrix is derived from the validated run details. Corresponding UA
 strings are identical in both files. Preserve them verbatim when consuming them.
@@ -58,6 +65,13 @@ release and checks its reported version and native runtime architecture. Discove
 checks the tagged source for the supported interactive and exec initialization
 profiles; unfamiliar upstream initialization behavior fails collection rather than
 silently labeling an arbitrary app-server identity as an official CLI profile.
+
+Ubuntu, macOS, and Windows are collected directly on GitHub-hosted runners.
+Debian 13, Fedora 44, and Alpine 3.24 use their official container images on
+matching x64 or ARM64 Ubuntu runners, without CPU emulation. Containers provide
+the distribution's userspace and share the host kernel, so Linux `os.release`
+and `os.version` describe the host kernel. The collector checks the distribution
+identity as well as the native architecture before running the binary.
 
 Each probe runs in a fresh process with an empty temporary Codex home and a
 controlled terminal environment, `TERM=xterm-256color`. App-server initialization
@@ -74,7 +88,7 @@ environment.
 ## Release policy and scheduling
 
 One published release, tagged `v<codex-version>`, contains `ua-matrix.json` and
-`ua-matrix.run.json`. The tag points to the collector commit. All six platforms
+`ua-matrix.run.json`. The tag points to the collector commit. All twelve platforms
 and both client modes must succeed, and both assets must be uploaded and verified,
 before the workflow publishes. Published versions are skipped; there is no
 periodic recollection of an unchanged Codex version.
@@ -119,7 +133,7 @@ python -m compileall -q scripts tests
 Run a native collection locally, choosing the platform that matches the machine:
 
 ```sh
-python scripts/collect.py --version 0.156.1 --platform linux-x64 --output .local/linux-x64.json
+python scripts/collect.py --version 0.156.1 --platform linux-ubuntu-x64 --output .local/linux-ubuntu-x64.json
 ```
 
 For a local smoke test, `--binary /absolute/path/to/codex` uses an already-installed

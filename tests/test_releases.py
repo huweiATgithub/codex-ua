@@ -69,8 +69,12 @@ def run_payload():
             "target": target,
             "source_url": f"https://github.com/openai/codex/releases/download/rust-v0.10.0/codex-{target}{extension}",
             "collected_at": "2026-09-23T12:34:56Z",
-            "os": {"system": system, "release": "1.0", "version": "1", "machine": machine},
-            "runner": {"name": "Hosted Agent", "image": "sample-runner", "image_version": "20260923.1"},
+            "os": {
+                "system": system, "release": "1.0", "version": "1", "machine": machine,
+                "distribution": {"id": platform.split("-")[1], "version_id": "1.0", "pretty_name": "Sample Linux"}
+                if system == "Linux" else None,
+            },
+            "runner": {"name": "Hosted Agent", "image": "sample-runner", "image_version": "20260923.1", "container_image": None},
             "terminal": {"TERM": "xterm-256color"}, "clients": clients,
         }
     return {
@@ -265,7 +269,7 @@ class PublicationTests(unittest.TestCase):
         self.assertIn(f"Collector commit: `{COMMIT}`.", body)
         self.assertIn("| Platform | Client | User-Agent |", body)
         rows = [line.split(" | ") for line in body.splitlines() if "<code>" in line]
-        self.assertEqual(len(rows), 12)
+        self.assertEqual(len(rows), 24)
         observed = {}
         for platform, mode, cell in rows:
             self.assertTrue(cell.startswith("<code>") and cell.endswith("</code> |"))
@@ -319,7 +323,7 @@ class PublicationTests(unittest.TestCase):
 
     def test_release_body_preserves_ua_with_table_and_html_characters(self):
         run = run_payload()
-        for client in run["platforms"]["linux-x64"]["clients"].values():
+        for client in run["platforms"]["linux-ubuntu-x64"]["clients"].values():
             client["user_agent"] = client["user_agent"].replace("Linux 1.0", "Linux `custom` | <build> & 1.0")
             if "http_capture" in client:
                 client["http_capture"]["user_agent"] = client["user_agent"]
@@ -368,7 +372,7 @@ class PublicationTests(unittest.TestCase):
             with self.subTest(issue=issue):
                 changed = copy.deepcopy(matrix)
                 if issue == "ua":
-                    changed["platforms"]["linux-x64"]["exec"] += " changed"
+                    changed["platforms"]["linux-ubuntu-x64"]["exec"] += " changed"
                 elif issue == "schema_type":
                     changed["schema_version"] = True
                 elif issue == "missing":

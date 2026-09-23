@@ -15,8 +15,14 @@ VERSION = "0.155.1"
 COMMIT = "a" * 40
 RUN_URL = "https://github.com/huweiATgithub/codex-ua/actions/runs/123456789"
 PLATFORMS = {
-    "linux-x64": ("x86_64-unknown-linux-musl", "Linux", "x86_64"),
-    "linux-arm64": ("aarch64-unknown-linux-musl", "Linux", "aarch64"),
+    "linux-ubuntu-x64": ("x86_64-unknown-linux-musl", "Linux", "x86_64"),
+    "linux-ubuntu-arm64": ("aarch64-unknown-linux-musl", "Linux", "aarch64"),
+    "linux-debian-x64": ("x86_64-unknown-linux-musl", "Linux", "x86_64"),
+    "linux-debian-arm64": ("aarch64-unknown-linux-musl", "Linux", "aarch64"),
+    "linux-fedora-x64": ("x86_64-unknown-linux-musl", "Linux", "x86_64"),
+    "linux-fedora-arm64": ("aarch64-unknown-linux-musl", "Linux", "aarch64"),
+    "linux-alpine-x64": ("x86_64-unknown-linux-musl", "Linux", "x86_64"),
+    "linux-alpine-arm64": ("aarch64-unknown-linux-musl", "Linux", "aarch64"),
     "macos-x64": ("x86_64-apple-darwin", "Darwin", "x86_64"),
     "macos-arm64": ("aarch64-apple-darwin", "Darwin", "arm64"),
     "windows-x64": ("x86_64-pc-windows-msvc", "Windows", "AMD64"),
@@ -40,8 +46,12 @@ def platform_record(platform):
         "target": target,
         "source_url": f"https://github.com/openai/codex/releases/download/rust-v{VERSION}/codex-{target}{extension}",
         "collected_at": "2026-09-23T12:34:56Z",
-        "os": {"system": system, "release": "1.0", "version": "OS build 42", "machine": machine},
-        "runner": {"name": "Hosted Agent", "image": "sample-runner", "image_version": "20260923.1"},
+        "os": {
+            "system": system, "release": "1.0", "version": "OS build 42", "machine": machine,
+            "distribution": {"id": platform.split("-")[1], "version_id": "1.0", "pretty_name": "Sample Linux"}
+            if system == "Linux" else None,
+        },
+        "runner": {"name": "Hosted Agent", "image": "sample-runner", "image_version": "20260923.1", "container_image": None},
         "terminal": {"TERM": "xterm-256color"},
         "clients": clients,
     }
@@ -81,12 +91,12 @@ class MatrixTests(unittest.TestCase):
             self.assemble()
 
     def test_duplicate_platform_is_not_silently_overwritten(self):
-        self.write(platform_record("linux-x64"), "duplicate.json")
-        with self.assertRaisesRegex(MatrixError, "duplicate platform: linux-x64"):
+        self.write(platform_record("linux-ubuntu-x64"), "duplicate.json")
+        with self.assertRaisesRegex(MatrixError, "duplicate platform: linux-ubuntu-x64"):
             self.assemble()
 
     def test_mixed_versions_cannot_publish(self):
-        record = platform_record("linux-x64")
+        record = platform_record("linux-ubuntu-x64")
         record["codex_version"] = "0.154.0"
         self.write(record)
         with self.assertRaisesRegex(MatrixError, "differs from requested collection version"):
@@ -98,7 +108,7 @@ class MatrixTests(unittest.TestCase):
                 self.assemble(version=version)
 
     def test_artifact_must_match_official_version_and_target(self):
-        original = platform_record("linux-x64")
+        original = platform_record("linux-ubuntu-x64")
         mutations = (
             ("target", "aarch64-unknown-linux-musl"),
             ("source_url", original["source_url"].replace("openai", "someone-else")),
@@ -114,14 +124,14 @@ class MatrixTests(unittest.TestCase):
 
     def test_exec_capture_must_match_initialization(self):
         for key, value in (("user_agent", "different/0.155.1"), ("originator", "codex-tui")):
-            record = platform_record("linux-x64")
+            record = platform_record("linux-ubuntu-x64")
             record["clients"]["exec"]["http_capture"][key] = value
             self.write(record)
             with self.subTest(key=key), self.assertRaisesRegex(MatrixError, f"http_capture.{key}"):
                 self.assemble()
 
     def test_client_identity_version_and_terminal_are_required(self):
-        original = platform_record("linux-x64")
+        original = platform_record("linux-ubuntu-x64")
         ua = original["clients"]["interactive"]["user_agent"]
         for invalid_ua in (
             ua.replace("codex-tui", "ua-probe"),
@@ -145,26 +155,46 @@ class MatrixTests(unittest.TestCase):
             ("os", {"system": "Linux", "release": "1", "version": "1", "machine": None}),
         )
         for key, value in mutations:
-            record = platform_record("linux-x64")
+            record = platform_record("linux-ubuntu-x64")
             record[key] = value
             self.write(record)
             with self.subTest(key=key, value=value), self.assertRaisesRegex(MatrixError, key):
                 self.assemble()
 
+    def test_environment_identity_must_match_platform_in_parser_and_schema(self):
+        schema = json.loads(Path("schema/ua-matrix.run.schema.json").read_text(encoding="utf-8"))
+        validator = jsonschema.Draft202012Validator(schema)
+        original = self.assemble()
+        for platform, key, value in (
+            ("linux-debian-x64", "distribution", {"id": "ubuntu", "version_id": "24.04", "pretty_name": "Ubuntu"}),
+            ("linux-debian-x64", "distribution", None),
+            ("linux-alpine-arm64", "distribution", {"id": "alpine", "version_id": "", "pretty_name": "Alpine"}),
+            ("macos-x64", "distribution", {"id": "debian", "version_id": "13", "pretty_name": "Debian"}),
+            ("linux-fedora-arm64", "machine", "x86_64"),
+            ("linux-fedora-x64", "system", "Darwin"),
+        ):
+            value_to_parse = copy.deepcopy(original)
+            value_to_parse["platforms"][platform]["os"][key] = value
+            with self.subTest(platform=platform, key=key, value=value):
+                with self.assertRaises(MatrixError):
+                    parse_run_matrix(value_to_parse)
+                with self.assertRaises(jsonschema.ValidationError):
+                    validator.validate(value_to_parse)
+
     def test_unknown_platform_and_fields_are_rejected(self):
-        record = platform_record("linux-x64")
+        record = platform_record("linux-ubuntu-x64")
         record["platform"] = "freebsd-x64"
-        self.write(record, "linux-x64.json")
+        self.write(record, "linux-ubuntu-x64.json")
         with self.assertRaisesRegex(MatrixError, "unsupported platform"):
             self.assemble()
-        record = platform_record("linux-x64")
+        record = platform_record("linux-ubuntu-x64")
         record["extra"] = "unversioned field"
         self.write(record)
         with self.assertRaisesRegex(MatrixError, "unexpected fields"):
             self.assemble()
 
     def test_duplicate_json_keys_are_rejected(self):
-        path = self.input_dir / "linux-x64.json"
+        path = self.input_dir / "linux-ubuntu-x64.json"
         path.write_text('{"schema_version": 1, "schema_version": 2}', encoding="utf-8")
         with self.assertRaisesRegex(MatrixError, "duplicate JSON key"):
             self.assemble()
@@ -220,19 +250,19 @@ class MatrixTests(unittest.TestCase):
         mutations = []
         for mode in ("interactive", "exec"):
             missing_mode = copy.deepcopy(original)
-            del missing_mode["platforms"]["linux-x64"][mode]
+            del missing_mode["platforms"]["linux-ubuntu-x64"][mode]
             mutations.append(missing_mode)
         detailed = copy.deepcopy(original)
         detailed["collector"] = {"commit": COMMIT, "run_url": RUN_URL}
         mutations.append(detailed)
         extra_platform = copy.deepcopy(original)
-        extra_platform["platforms"]["other"] = original["platforms"]["linux-x64"]
+        extra_platform["platforms"]["other"] = original["platforms"]["linux-ubuntu-x64"]
         mutations.append(extra_platform)
         extra_mode = copy.deepcopy(original)
-        extra_mode["platforms"]["linux-x64"]["other"] = "UA"
+        extra_mode["platforms"]["linux-ubuntu-x64"]["other"] = "UA"
         mutations.append(extra_mode)
         object_ua = copy.deepcopy(original)
-        object_ua["platforms"]["linux-x64"]["exec"] = {"user_agent": "UA"}
+        object_ua["platforms"]["linux-ubuntu-x64"]["exec"] = {"user_agent": "UA"}
         mutations.append(object_ua)
         for value in mutations:
             with self.subTest(value=value), self.assertRaises(jsonschema.ValidationError):
@@ -251,32 +281,32 @@ class MatrixTests(unittest.TestCase):
             self.assertEqual(set(clients), {"interactive", "exec"})
             for mode in ("interactive", "exec"):
                 self.assertEqual(clients[mode], original["platforms"][platform]["clients"][mode]["user_agent"])
-        original["platforms"]["linux-x64"]["clients"]["exec"]["user_agent"] = "tampered"
-        self.assertNotEqual(results.run["platforms"]["linux-x64"]["clients"]["exec"]["user_agent"], "tampered")
-        self.assertNotEqual(results.matrix["platforms"]["linux-x64"]["exec"], "tampered")
+        original["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["user_agent"] = "tampered"
+        self.assertNotEqual(results.run["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["user_agent"], "tampered")
+        self.assertNotEqual(results.matrix["platforms"]["linux-ubuntu-x64"]["exec"], "tampered")
 
     def test_run_parser_returns_an_independent_normalized_matrix(self):
         original = self.assemble()
         parsed = parse_run_matrix(original)
         self.assertEqual(parsed, original)
-        original["platforms"]["linux-x64"]["clients"]["exec"]["http_capture"]["originator"] = "tampered"
-        self.assertEqual(parsed["platforms"]["linux-x64"]["clients"]["exec"]["http_capture"]["originator"], "codex_exec")
+        original["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["http_capture"]["originator"] = "tampered"
+        self.assertEqual(parsed["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["http_capture"]["originator"], "codex_exec")
 
     def test_run_parser_and_publication_reject_incomplete_matrix_and_tampered_metadata(self):
         original = self.assemble()
         mutations = []
         incomplete = copy.deepcopy(original)
-        del incomplete["platforms"]["linux-arm64"]
+        del incomplete["platforms"]["linux-ubuntu-arm64"]
         mutations.append(incomplete)
         invalid_capture = copy.deepcopy(original)
-        invalid_capture["platforms"]["linux-x64"]["clients"]["exec"]["http_capture"]["user_agent"] = "tampered"
+        invalid_capture["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["http_capture"]["user_agent"] = "tampered"
         mutations.append(invalid_capture)
         invalid_version = copy.deepcopy(original)
         invalid_version["codex_version"] = "0.154.0"
         invalid_version["upstream_release"] = "https://github.com/openai/codex/releases/tag/rust-v0.154.0"
         mutations.append(invalid_version)
         hidden_version = copy.deepcopy(original)
-        hidden_version["platforms"]["linux-x64"]["codex_version"] = "0.154.0"
+        hidden_version["platforms"]["linux-ubuntu-x64"]["codex_version"] = "0.154.0"
         mutations.append(hidden_version)
         for invalid in mutations:
             for parse in (parse_run_matrix, publication_matrices):

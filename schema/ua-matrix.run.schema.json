@@ -44,15 +44,21 @@
     "platforms": {
       "type": "object",
       "required": [
-        "linux-x64",
-        "linux-arm64",
+        "linux-ubuntu-x64",
+        "linux-ubuntu-arm64",
+        "linux-debian-x64",
+        "linux-debian-arm64",
+        "linux-fedora-x64",
+        "linux-fedora-arm64",
+        "linux-alpine-x64",
+        "linux-alpine-arm64",
         "macos-x64",
         "macos-arm64",
         "windows-x64",
         "windows-arm64"
       ],
       "properties": {
-        "linux-x64": {
+        "linux-ubuntu-x64": {
           "allOf": [
             {
               "$ref": "#/$defs/platform"
@@ -64,12 +70,30 @@
                 },
                 "source_url": {
                   "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-x86_64-unknown-linux-musl\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Linux"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[xX]86_64|[aA][mM][dD]64)$"
+                    },
+                    "distribution": {
+                      "properties": {
+                        "id": {
+                          "const": "ubuntu"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  }
                 }
               }
             }
           ]
         },
-        "linux-arm64": {
+        "linux-ubuntu-arm64": {
           "allOf": [
             {
               "$ref": "#/$defs/platform"
@@ -81,6 +105,234 @@
                 },
                 "source_url": {
                   "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-aarch64-unknown-linux-musl\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Linux"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[aA][aA][rR][cC][hH]64|[aA][rR][mM]64)$"
+                    },
+                    "distribution": {
+                      "properties": {
+                        "id": {
+                          "const": "ubuntu"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "linux-debian-x64": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/platform"
+            },
+            {
+              "properties": {
+                "target": {
+                  "const": "x86_64-unknown-linux-musl"
+                },
+                "source_url": {
+                  "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-x86_64-unknown-linux-musl\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Linux"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[xX]86_64|[aA][mM][dD]64)$"
+                    },
+                    "distribution": {
+                      "properties": {
+                        "id": {
+                          "const": "debian"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "linux-debian-arm64": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/platform"
+            },
+            {
+              "properties": {
+                "target": {
+                  "const": "aarch64-unknown-linux-musl"
+                },
+                "source_url": {
+                  "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-aarch64-unknown-linux-musl\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Linux"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[aA][aA][rR][cC][hH]64|[aA][rR][mM]64)$"
+                    },
+                    "distribution": {
+                      "properties": {
+                        "id": {
+                          "const": "debian"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "linux-fedora-x64": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/platform"
+            },
+            {
+              "properties": {
+                "target": {
+                  "const": "x86_64-unknown-linux-musl"
+                },
+                "source_url": {
+                  "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-x86_64-unknown-linux-musl\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Linux"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[xX]86_64|[aA][mM][dD]64)$"
+                    },
+                    "distribution": {
+                      "properties": {
+                        "id": {
+                          "const": "fedora"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "linux-fedora-arm64": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/platform"
+            },
+            {
+              "properties": {
+                "target": {
+                  "const": "aarch64-unknown-linux-musl"
+                },
+                "source_url": {
+                  "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-aarch64-unknown-linux-musl\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Linux"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[aA][aA][rR][cC][hH]64|[aA][rR][mM]64)$"
+                    },
+                    "distribution": {
+                      "properties": {
+                        "id": {
+                          "const": "fedora"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "linux-alpine-x64": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/platform"
+            },
+            {
+              "properties": {
+                "target": {
+                  "const": "x86_64-unknown-linux-musl"
+                },
+                "source_url": {
+                  "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-x86_64-unknown-linux-musl\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Linux"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[xX]86_64|[aA][mM][dD]64)$"
+                    },
+                    "distribution": {
+                      "properties": {
+                        "id": {
+                          "const": "alpine"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "linux-alpine-arm64": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/platform"
+            },
+            {
+              "properties": {
+                "target": {
+                  "const": "aarch64-unknown-linux-musl"
+                },
+                "source_url": {
+                  "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-aarch64-unknown-linux-musl\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Linux"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[aA][aA][rR][cC][hH]64|[aA][rR][mM]64)$"
+                    },
+                    "distribution": {
+                      "properties": {
+                        "id": {
+                          "const": "alpine"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  }
                 }
               }
             }
@@ -98,6 +350,19 @@
                 },
                 "source_url": {
                   "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-x86_64-apple-darwin\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Darwin"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[xX]86_64|[aA][mM][dD]64)$"
+                    },
+                    "distribution": {
+                      "type": "null"
+                    }
+                  }
                 }
               }
             }
@@ -115,6 +380,19 @@
                 },
                 "source_url": {
                   "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-aarch64-apple-darwin\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Darwin"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[aA][aA][rR][cC][hH]64|[aA][rR][mM]64)$"
+                    },
+                    "distribution": {
+                      "type": "null"
+                    }
+                  }
                 }
               }
             }
@@ -132,6 +410,19 @@
                 },
                 "source_url": {
                   "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-x86_64-pc-windows-msvc\\.exe\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Windows"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[xX]86_64|[aA][mM][dD]64)$"
+                    },
+                    "distribution": {
+                      "type": "null"
+                    }
+                  }
                 }
               }
             }
@@ -149,6 +440,19 @@
                 },
                 "source_url": {
                   "pattern": "^https://github\\.com/openai/codex/releases/download/rust-v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)/codex-aarch64-pc-windows-msvc\\.exe\\.tar\\.gz$"
+                },
+                "os": {
+                  "properties": {
+                    "system": {
+                      "const": "Windows"
+                    },
+                    "machine": {
+                      "pattern": "^(?:[aA][aA][rR][cC][hH]64|[aA][rR][mM]64)$"
+                    },
+                    "distribution": {
+                      "type": "null"
+                    }
+                  }
                 }
               }
             }
@@ -201,7 +505,8 @@
             "system",
             "release",
             "version",
-            "machine"
+            "machine",
+            "distribution"
           ],
           "properties": {
             "system": {
@@ -215,6 +520,16 @@
             },
             "machine": {
               "$ref": "#/$defs/nonemptyString"
+            },
+            "distribution": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/distribution"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "additionalProperties": false
@@ -224,7 +539,8 @@
           "required": [
             "name",
             "image",
-            "image_version"
+            "image_version",
+            "container_image"
           ],
           "properties": {
             "name": {
@@ -235,6 +551,16 @@
             },
             "image_version": {
               "$ref": "#/$defs/nonemptyString"
+            },
+            "container_image": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/nonemptyString"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "additionalProperties": false
@@ -309,6 +635,26 @@
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "distribution": {
+      "type": "object",
+      "required": [
+        "id",
+        "version_id",
+        "pretty_name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "version_id": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "pretty_name": {
+          "$ref": "#/$defs/nonemptyString"
         }
       },
       "additionalProperties": false

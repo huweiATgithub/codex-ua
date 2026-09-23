@@ -6,10 +6,37 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from scripts.collect import child_environment, initialize_user_agent
+from scripts import collect, matrix
+from scripts.collect import child_environment, initialize_user_agent, native_platform
 
 
 class CollectorTests(unittest.TestCase):
+    def test_native_linux_platform_uses_distribution_and_architecture(self):
+        for distro in ("ubuntu", "debian", "fedora", "alpine"):
+            for machine, architecture in (("x86_64", "x64"), ("aarch64", "arm64")):
+                with self.subTest(distro=distro, machine=machine), \
+                     patch("scripts.collect.platform.system", return_value="Linux"), \
+                     patch("scripts.collect.platform.machine", return_value=machine), \
+                     patch("scripts.collect.platform.freedesktop_os_release", return_value={"ID": distro}):
+                    self.assertEqual(native_platform(), f"linux-{distro}-{architecture}")
+
+    def test_wrong_distribution_stops_before_downloading_or_running(self):
+        with patch("scripts.collect.native_platform", return_value="linux-ubuntu-x64"), \
+             patch("scripts.collect.download_binary") as download, \
+             patch("scripts.collect.subprocess.run") as run:
+            with self.assertRaisesRegex(RuntimeError, "requested linux-debian-x64"):
+                collect.collect("0.156.1", "linux-debian-x64")
+            download.assert_not_called()
+            run.assert_not_called()
+
+    def test_distribution_targets_match_publication_and_reuse_official_binaries(self):
+        self.assertEqual(collect.TARGETS, matrix.TARGETS)
+        self.assertEqual(len(collect.TARGETS), 12)
+        for architecture in ("x64", "arm64"):
+            urls = {collect.source_url("0.156.1", f"linux-{distro}-{architecture}")
+                    for distro in ("ubuntu", "debian", "fedora", "alpine")}
+            self.assertEqual(len(urls), 1)
+
     def test_measurement_environment_excludes_host_identity_and_credentials(self):
         inherited = {
             "PATH": "/usr/bin",

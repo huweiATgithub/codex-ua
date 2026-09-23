@@ -20,18 +20,42 @@
     "platforms": {
       "type": "object",
       "required": [
-        "linux-x64",
-        "linux-arm64",
+        "linux-ubuntu-x64",
+        "linux-ubuntu-arm64",
+        "linux-debian-x64",
+        "linux-debian-arm64",
+        "linux-fedora-x64",
+        "linux-fedora-arm64",
+        "linux-alpine-x64",
+        "linux-alpine-arm64",
         "macos-x64",
         "macos-arm64",
         "windows-x64",
         "windows-arm64"
       ],
       "properties": {
-        "linux-x64": {
+        "linux-ubuntu-x64": {
           "$ref": "#/$defs/clients"
         },
-        "linux-arm64": {
+        "linux-ubuntu-arm64": {
+          "$ref": "#/$defs/clients"
+        },
+        "linux-debian-x64": {
+          "$ref": "#/$defs/clients"
+        },
+        "linux-debian-arm64": {
+          "$ref": "#/$defs/clients"
+        },
+        "linux-fedora-x64": {
+          "$ref": "#/$defs/clients"
+        },
+        "linux-fedora-arm64": {
+          "$ref": "#/$defs/clients"
+        },
+        "linux-alpine-x64": {
+          "$ref": "#/$defs/clients"
+        },
+        "linux-alpine-arm64": {
           "$ref": "#/$defs/clients"
         },
         "macos-x64": {

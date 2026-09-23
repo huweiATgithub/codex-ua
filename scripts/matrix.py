@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble six platform records into compact and detailed UA matrices."""
+"""Assemble platform records into compact and detailed UA matrices."""
 
 from __future__ import annotations
 
@@ -12,8 +12,14 @@ import re
 
 
 TARGETS = {
-    "linux-x64": "x86_64-unknown-linux-musl",
-    "linux-arm64": "aarch64-unknown-linux-musl",
+    "linux-ubuntu-x64": "x86_64-unknown-linux-musl",
+    "linux-ubuntu-arm64": "aarch64-unknown-linux-musl",
+    "linux-debian-x64": "x86_64-unknown-linux-musl",
+    "linux-debian-arm64": "aarch64-unknown-linux-musl",
+    "linux-fedora-x64": "x86_64-unknown-linux-musl",
+    "linux-fedora-arm64": "aarch64-unknown-linux-musl",
+    "linux-alpine-x64": "x86_64-unknown-linux-musl",
+    "linux-alpine-arm64": "aarch64-unknown-linux-musl",
     "macos-x64": "x86_64-apple-darwin",
     "macos-arm64": "aarch64-apple-darwin",
     "windows-x64": "x86_64-pc-windows-msvc",
@@ -82,17 +88,44 @@ class CollectorProvenance:
 
 
 @dataclass(frozen=True)
+class LinuxDistribution:
+    id: str
+    version_id: str
+    pretty_name: str
+
+    @classmethod
+    def parse(cls, value: object, expected_id: str) -> LinuxDistribution:
+        fields = {"id", "version_id", "pretty_name"}
+        values = object_fields(value, fields, "os.distribution")
+        distribution = cls(**{key: nonempty_string(values[key], f"os.distribution.{key}") for key in fields})
+        if distribution.id != expected_id:
+            raise MatrixError(f"os.distribution.id: expected {expected_id}")
+        return distribution
+
+
+@dataclass(frozen=True)
 class OSInfo:
     system: str
     release: str
     version: str
     machine: str
+    distribution: LinuxDistribution | None
 
     @classmethod
-    def parse(cls, value: object) -> OSInfo:
+    def parse(cls, value: object, platform: str) -> OSInfo:
         fields = {"system", "release", "version", "machine"}
-        values = object_fields(value, fields, "os")
-        return cls(**{key: nonempty_string(values[key], f"os.{key}") for key in fields})
+        values = object_fields(value, fields | {"distribution"}, "os")
+        distribution = None
+        if platform.startswith("linux-"):
+            distribution = LinuxDistribution.parse(values["distribution"], platform.split("-")[1])
+        elif values["distribution"] is not None:
+            raise MatrixError("os.distribution: expected null outside Linux")
+        info = cls(**{key: nonempty_string(values[key], f"os.{key}") for key in fields}, distribution=distribution)
+        expected_system = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}[platform.split("-")[0]]
+        expected_machines = {"x86_64", "amd64"} if platform.endswith("-x64") else {"aarch64", "arm64"}
+        if info.system != expected_system or info.machine.lower() not in expected_machines:
+            raise MatrixError(f"os: system and machine must match {platform}")
+        return info
 
 
 @dataclass(frozen=True)
@@ -100,12 +133,16 @@ class RunnerInfo:
     name: str
     image: str
     image_version: str
+    container_image: str | None
 
     @classmethod
     def parse(cls, value: object) -> RunnerInfo:
         fields = {"name", "image", "image_version"}
-        values = object_fields(value, fields, "runner")
-        return cls(**{key: nonempty_string(values[key], f"runner.{key}") for key in fields})
+        values = object_fields(value, fields | {"container_image"}, "runner")
+        container = values["container_image"]
+        if container is not None:
+            container = nonempty_string(container, "runner.container_image")
+        return cls(**{key: nonempty_string(values[key], f"runner.{key}") for key in fields}, container_image=container)
 
 
 @dataclass(frozen=True)
@@ -208,7 +245,7 @@ class PlatformObservation:
             target,
             source_url,
             collected_at,
-            OSInfo.parse(values["os"]),
+            OSInfo.parse(values["os"], platform),
             RunnerInfo.parse(values["runner"]),
             ClientObservation.parse(clients["interactive"], "interactive", version),
             ClientObservation.parse(clients["exec"], "exec", version),

@@ -50,10 +50,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: linux-x64
+          - platform: linux-ubuntu-x64
             runner: ubuntu-24.04
-          - platform: linux-arm64
+          - platform: linux-ubuntu-arm64
             runner: ubuntu-24.04-arm
+          - platform: linux-debian-x64
+            runner: ubuntu-24.04
+            container_image: debian:13-slim
+          - platform: linux-debian-arm64
+            runner: ubuntu-24.04-arm
+            container_image: debian:13-slim
+          - platform: linux-fedora-x64
+            runner: ubuntu-24.04
+            container_image: fedora:44
+          - platform: linux-fedora-arm64
+            runner: ubuntu-24.04-arm
+            container_image: fedora:44
+          - platform: linux-alpine-x64
+            runner: ubuntu-24.04
+            container_image: alpine:3.24
+          - platform: linux-alpine-arm64
+            runner: ubuntu-24.04-arm
+            container_image: alpine:3.24
           - platform: macos-x64
             runner: macos-15-intel
           - platform: macos-arm64
@@ -67,9 +85,11 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: ${{ !matrix.container_image }}
         with:
           python-version: '3.13'
       - name: Collect native client UAs
+        if: ${{ !matrix.container_image }}
         env:
           CODEX_VERSION: ${{ needs.discover.outputs.version }}
           COLLECT_PLATFORM: ${{ matrix.platform }}
@@ -79,6 +99,31 @@ jobs:
           --version "$CODEX_VERSION"
           --platform "$COLLECT_PLATFORM"
           --output ".local/$COLLECT_PLATFORM.json"
+      - name: Collect Linux distribution UAs
+        if: ${{ matrix.container_image }}
+        env:
+          CODEX_VERSION: ${{ needs.discover.outputs.version }}
+          COLLECT_PLATFORM: ${{ matrix.platform }}
+          COLLECT_CONTAINER_IMAGE: ${{ matrix.container_image }}
+        shell: bash
+        run: |
+          mkdir -p .local
+          docker run --rm \
+            --env CODEX_VERSION --env COLLECT_PLATFORM --env COLLECT_CONTAINER_IMAGE \
+            --env RUNNER_NAME --env ImageOS --env ImageVersion \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/.local,target=/output" \
+            --workdir /workspace "$COLLECT_CONTAINER_IMAGE" sh -ec '
+              case "$COLLECT_PLATFORM" in
+                linux-debian-*) apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates ;;
+                linux-fedora-*) dnf install -y python3 ca-certificates ;;
+                linux-alpine-*) apk add --no-cache python3 ca-certificates ;;
+              esac
+              python3 scripts/collect.py \
+                --version "$CODEX_VERSION" \
+                --platform "$COLLECT_PLATFORM" \
+                --output "/output/$COLLECT_PLATFORM.json"
+            '
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: platform-${{ matrix.platform }}

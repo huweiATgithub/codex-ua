@@ -34,10 +34,10 @@ def platform_record(platform):
     target, system, machine = PLATFORMS[platform]
     extension = ".exe.tar.gz" if system == "Windows" else ".tar.gz"
     clients = {}
-    for mode, identity in (("interactive", "codex-tui"), ("exec", "codex_exec")):
+    for mode, identity in (("CLI", "codex-tui"), ("Exec", "codex_exec")):
         ua = f"{identity}/{VERSION} ({system} 1.0; {machine}) xterm-256color ({identity}; {VERSION})"
         clients[mode] = {"user_agent": ua, "method": "app-server-initialize"}
-        if mode == "exec":
+        if mode == "Exec":
             clients[mode]["http_capture"] = {"user_agent": ua, "originator": "codex_exec"}
     return {
         "schema_version": 1,
@@ -125,14 +125,14 @@ class MatrixTests(unittest.TestCase):
     def test_exec_capture_must_match_initialization(self):
         for key, value in (("user_agent", "different/0.155.1"), ("originator", "codex-tui")):
             record = platform_record("linux-ubuntu-x64")
-            record["clients"]["exec"]["http_capture"][key] = value
+            record["clients"]["Exec"]["http_capture"][key] = value
             self.write(record)
             with self.subTest(key=key), self.assertRaisesRegex(MatrixError, f"http_capture.{key}"):
                 self.assemble()
 
     def test_client_identity_version_and_terminal_are_required(self):
         original = platform_record("linux-ubuntu-x64")
-        ua = original["clients"]["interactive"]["user_agent"]
+        ua = original["clients"]["CLI"]["user_agent"]
         for invalid_ua in (
             ua.replace("codex-tui", "ua-probe"),
             ua.replace("0.155.1", "0.154.0"),
@@ -140,7 +140,7 @@ class MatrixTests(unittest.TestCase):
             ua.replace("Linux", "Linux\n"),
         ):
             record = copy.deepcopy(original)
-            record["clients"]["interactive"]["user_agent"] = invalid_ua
+            record["clients"]["CLI"]["user_agent"] = invalid_ua
             self.write(record)
             with self.subTest(ua=invalid_ua), self.assertRaisesRegex(MatrixError, "user_agent"):
                 self.assemble()
@@ -248,7 +248,7 @@ class MatrixTests(unittest.TestCase):
         validator = jsonschema.Draft202012Validator(schema)
         original = publication_matrices(self.assemble()).matrix
         mutations = []
-        for mode in ("interactive", "exec"):
+        for mode in ("CLI", "Exec"):
             missing_mode = copy.deepcopy(original)
             del missing_mode["platforms"]["linux-ubuntu-x64"][mode]
             mutations.append(missing_mode)
@@ -262,7 +262,7 @@ class MatrixTests(unittest.TestCase):
         extra_mode["platforms"]["linux-ubuntu-x64"]["other"] = "UA"
         mutations.append(extra_mode)
         object_ua = copy.deepcopy(original)
-        object_ua["platforms"]["linux-ubuntu-x64"]["exec"] = {"user_agent": "UA"}
+        object_ua["platforms"]["linux-ubuntu-x64"]["Exec"] = {"user_agent": "UA"}
         mutations.append(object_ua)
         for value in mutations:
             with self.subTest(value=value), self.assertRaises(jsonschema.ValidationError):
@@ -278,19 +278,19 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(set(results.matrix["platforms"]), set(PLATFORMS))
         for platform in PLATFORMS:
             clients = results.matrix["platforms"][platform]
-            self.assertEqual(set(clients), {"interactive", "exec"})
-            for mode in ("interactive", "exec"):
+            self.assertEqual(set(clients), {"CLI", "Exec"})
+            for mode in ("CLI", "Exec"):
                 self.assertEqual(clients[mode], original["platforms"][platform]["clients"][mode]["user_agent"])
-        original["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["user_agent"] = "tampered"
-        self.assertNotEqual(results.run["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["user_agent"], "tampered")
-        self.assertNotEqual(results.matrix["platforms"]["linux-ubuntu-x64"]["exec"], "tampered")
+        original["platforms"]["linux-ubuntu-x64"]["clients"]["Exec"]["user_agent"] = "tampered"
+        self.assertNotEqual(results.run["platforms"]["linux-ubuntu-x64"]["clients"]["Exec"]["user_agent"], "tampered")
+        self.assertNotEqual(results.matrix["platforms"]["linux-ubuntu-x64"]["Exec"], "tampered")
 
     def test_run_parser_returns_an_independent_normalized_matrix(self):
         original = self.assemble()
         parsed = parse_run_matrix(original)
         self.assertEqual(parsed, original)
-        original["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["http_capture"]["originator"] = "tampered"
-        self.assertEqual(parsed["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["http_capture"]["originator"], "codex_exec")
+        original["platforms"]["linux-ubuntu-x64"]["clients"]["Exec"]["http_capture"]["originator"] = "tampered"
+        self.assertEqual(parsed["platforms"]["linux-ubuntu-x64"]["clients"]["Exec"]["http_capture"]["originator"], "codex_exec")
 
     def test_run_parser_and_publication_reject_incomplete_matrix_and_tampered_metadata(self):
         original = self.assemble()
@@ -299,7 +299,7 @@ class MatrixTests(unittest.TestCase):
         del incomplete["platforms"]["linux-ubuntu-arm64"]
         mutations.append(incomplete)
         invalid_capture = copy.deepcopy(original)
-        invalid_capture["platforms"]["linux-ubuntu-x64"]["clients"]["exec"]["http_capture"]["user_agent"] = "tampered"
+        invalid_capture["platforms"]["linux-ubuntu-x64"]["clients"]["Exec"]["http_capture"]["user_agent"] = "tampered"
         mutations.append(invalid_capture)
         invalid_version = copy.deepcopy(original)
         invalid_version["codex_version"] = "0.154.0"

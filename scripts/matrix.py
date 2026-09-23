@@ -159,13 +159,13 @@ class ClientObservation:
     @classmethod
     def parse(cls, value: object, mode: str, version: StableVersion) -> ClientObservation:
         fields = {"user_agent", "method"}
-        if mode == "exec":
+        if mode == "Exec":
             fields.add("http_capture")
         values = object_fields(value, fields, f"clients.{mode}")
         if values["method"] != "app-server-initialize":
             raise MatrixError(f"clients.{mode}.method: expected app-server-initialize")
         ua = nonempty_string(values["user_agent"], f"clients.{mode}.user_agent")
-        identity = "codex-tui" if mode == "interactive" else "codex_exec"
+        identity = "codex-tui" if mode == "CLI" else "codex_exec"
         prefix = f"{identity}/{version.value} ("
         suffix = f") xterm-256color ({identity}; {version.value})"
         if not ua.startswith(prefix) or not ua.endswith(suffix):
@@ -177,12 +177,12 @@ class ClientObservation:
             raise MatrixError(f"clients.{mode}.user_agent: contains a control character")
 
         capture = None
-        if mode == "exec":
+        if mode == "Exec":
             captured = object_fields(values["http_capture"], {"user_agent", "originator"}, "http_capture")
             if captured["user_agent"] != ua:
-                raise MatrixError("clients.exec.http_capture.user_agent: differs from initialized UA")
+                raise MatrixError("clients.Exec.http_capture.user_agent: differs from initialized UA")
             if captured["originator"] != "codex_exec":
-                raise MatrixError("clients.exec.http_capture.originator: expected codex_exec")
+                raise MatrixError("clients.Exec.http_capture.originator: expected codex_exec")
             capture = HttpCapture(ua, "codex_exec")
         return cls(ua, capture)
 
@@ -239,7 +239,7 @@ class PlatformObservation:
             raise MatrixError("collected_at: expected UTC")
         if values["terminal"] != {"TERM": "xterm-256color"}:
             raise MatrixError("terminal: expected only TERM=xterm-256color")
-        clients = object_fields(values["clients"], {"interactive", "exec"}, "clients")
+        clients = object_fields(values["clients"], {"CLI", "Exec"}, "clients")
         return cls(
             platform,
             target,
@@ -247,8 +247,8 @@ class PlatformObservation:
             collected_at,
             OSInfo.parse(values["os"], platform),
             RunnerInfo.parse(values["runner"]),
-            ClientObservation.parse(clients["interactive"], "interactive", version),
-            ClientObservation.parse(clients["exec"], "exec", version),
+            ClientObservation.parse(clients["CLI"], "CLI", version),
+            ClientObservation.parse(clients["Exec"], "Exec", version),
         )
 
     def to_dict(self) -> dict:
@@ -259,7 +259,7 @@ class PlatformObservation:
             "os": asdict(self.os),
             "runner": asdict(self.runner),
             "terminal": {"TERM": "xterm-256color"},
-            "clients": {"interactive": self.interactive.to_dict(), "exec": self.exec.to_dict()},
+            "clients": {"CLI": self.interactive.to_dict(), "Exec": self.exec.to_dict()},
         }
 
 
@@ -323,7 +323,7 @@ def publication_matrices(value: object) -> PublicationMatrices:
         "platforms": {
             platform: {
                 mode: observation["clients"][mode]["user_agent"]
-                for mode in ("interactive", "exec")
+                for mode in ("CLI", "Exec")
             }
             for platform, observation in run["platforms"].items()
         },

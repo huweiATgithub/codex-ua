@@ -320,8 +320,8 @@ def collect(version, platform_name, supplied_binary=None):
         },
         "terminal": TERMINAL,
         "clients": {
-            "interactive": {"user_agent": interactive, "method": "app-server-initialize"},
-            "exec": {"user_agent": exec_ua, "method": "app-server-initialize", "http_capture": capture},
+            "CLI": {"user_agent": interactive, "method": "app-server-initialize"},
+            "Exec": {"user_agent": exec_ua, "method": "app-server-initialize", "http_capture": capture},
         },
     }
 

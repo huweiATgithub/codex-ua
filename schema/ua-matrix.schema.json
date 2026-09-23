@@ -76,7 +76,7 @@
   },
   "additionalProperties": false,
   "$defs": {
-    "interactiveUserAgent": {
+    "cliUserAgent": {
       "type": "string",
       "pattern": "^codex-tui/(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*) \\([^;()\\u0000-\\u001f\\u007f]+; [^;()\\u0000-\\u001f\\u007f]+\\) xterm-256color \\(codex-tui; (?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\)$"
     },
@@ -87,14 +87,14 @@
     "clients": {
       "type": "object",
       "required": [
-        "interactive",
-        "exec"
+        "CLI",
+        "Exec"
       ],
       "properties": {
-        "interactive": {
-          "$ref": "#/$defs/interactiveUserAgent"
+        "CLI": {
+          "$ref": "#/$defs/cliUserAgent"
         },
-        "exec": {
+        "Exec": {
           "$ref": "#/$defs/execUserAgent"
         }
       },

@@ -59,10 +59,10 @@ def run_payload():
         system = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}[platform.split("-")[0]]
         machine = "x86_64" if platform.endswith("-x64") else "aarch64"
         clients = {}
-        for mode, identity in (("interactive", "codex-tui"), ("exec", "codex_exec")):
+        for mode, identity in (("CLI", "codex-tui"), ("Exec", "codex_exec")):
             ua = f"{identity}/0.10.0 ({system} 1.0; {machine}) xterm-256color ({identity}; 0.10.0)"
             clients[mode] = {"user_agent": ua, "method": "app-server-initialize"}
-            if mode == "exec":
+            if mode == "Exec":
                 clients[mode]["http_capture"] = {"user_agent": ua, "originator": identity}
         extension = ".exe.tar.gz" if system == "Windows" else ".tar.gz"
         platforms[platform] = {
@@ -372,7 +372,7 @@ class PublicationTests(unittest.TestCase):
             with self.subTest(issue=issue):
                 changed = copy.deepcopy(matrix)
                 if issue == "ua":
-                    changed["platforms"]["linux-ubuntu-x64"]["exec"] += " changed"
+                    changed["platforms"]["linux-ubuntu-x64"]["Exec"] += " changed"
                 elif issue == "schema_type":
                     changed["schema_version"] = True
                 elif issue == "missing":

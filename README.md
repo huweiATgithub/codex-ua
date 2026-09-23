@@ -2,7 +2,7 @@
 
 Collect User-Agent samples from official Codex CLI binaries on Ubuntu, Debian,
 Fedora, Alpine, macOS, and Windows, on x64 and ARM64. Each matrix contains
-interactive and exec client profiles for one stable Codex version. These are
+CLI and Exec client profiles for one stable Codex version. These are
 samples of the recorded runtime environments, not an exhaustive list of possible
 Codex User-Agents.
 
@@ -35,12 +35,12 @@ Its top-level fields are `schema_version`, `codex_version`, and `platforms`.
 
 `platforms` has twelve keys: each of `linux-ubuntu`, `linux-debian`, `linux-fedora`,
 `linux-alpine`, `macos`, and `windows` paired with `-x64` and `-arm64`.
-Each entry maps `interactive` and `exec` directly to UA strings. Read a UA using,
+Each entry maps `CLI` and `Exec` directly to UA strings. Read a UA using,
 for example:
 
 ```text
-platforms["linux-debian-x64"].interactive
-platforms["windows-arm64"].exec
+platforms["linux-debian-x64"]["CLI"]
+platforms["windows-arm64"]["Exec"]
 ```
 
 `ua-matrix.run.json` follows the [run schema](schema/ua-matrix.run.schema.json)
@@ -80,7 +80,7 @@ invocation sends a request to a loopback Responses server, which returns a canne
 response. Its headers must match the composed exec UA. No OpenAI credentials or
 model calls are needed.
 
-The interactive entry is a backend-composed profile, not an HTTP capture from an
+The CLI entry is a backend-composed profile, not an HTTP capture from an
 interactive terminal session. OS versions and terminal environments can change
 the UA independently of the Codex version; the matrix describes its collection
 environment.

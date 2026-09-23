@@ -14,10 +14,12 @@ import re
 import subprocess
 import sys
 
-from matrix import MatrixError, StableVersion, TARGETS, parse_published_matrix, unique_object
+from matrix import MatrixError, StableVersion, TARGETS, publication_matrices, unique_object
 
 
-ASSET = "ua-matrix.json"
+MATRIX_ASSET = "ua-matrix.json"
+RUN_ASSET = "ua-matrix.run.json"
+ASSETS = (MATRIX_ASSET, RUN_ASSET)
 UPSTREAM = "openai/codex"
 
 
@@ -93,12 +95,13 @@ class CompletedRelease:
         version = release_version(value, "v")
         if version is None:
             return None
-        assets = [asset for asset in value.get("assets", []) if asset.get("name") == ASSET]
-        if len(assets) != 1 or assets[0].get("size", 0) <= 0 or assets[0].get("state") != "uploaded":
-            raise ReleaseError(
-                f"Published release v{version.value} has no complete {ASSET}; "
-                "repair it explicitly before continuing. Published releases are never overwritten."
-            )
+        for name in ASSETS:
+            assets = [asset for asset in value.get("assets", []) if asset.get("name") == name]
+            if len(assets) != 1 or assets[0].get("size", 0) <= 0 or assets[0].get("state") != "uploaded":
+                raise ReleaseError(
+                    f"Published release v{version.value} has no complete {name}; "
+                    "repair it explicitly before continuing. Published releases are never overwritten."
+                )
         published_at = datetime.fromisoformat(value["published_at"])
         if published_at.tzinfo is None:
             raise ReleaseError(f"Published release v{version.value} has no timezone in published_at")
@@ -200,15 +203,20 @@ def verify_tag_target(github: GitHub, repository: str, tag: str, commit: str) ->
         raise ReleaseError(f"Tag {tag} already targets another commit; inspect the draft/tag before retrying")
 
 
-def publish(github: GitHub, repository: str, requested: str, asset: Path, commit: str) -> dict:
+def publish(github: GitHub, repository: str, requested: str, matrix: Path, run: Path, commit: str) -> dict:
     version = StableVersion.parse(requested)
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ReleaseError("collector-commit must be a lowercase 40-character Git commit SHA")
-    if asset.name != ASSET:
-        raise ReleaseError(f"Release asset must be named {ASSET}")
-    raw = asset.read_bytes()
-    matrix = parse_published_matrix(json.loads(raw, object_pairs_hook=unique_object))
-    if matrix.get("codex_version") != version.value or matrix.get("collector", {}).get("commit") != commit:
+    for path, name in ((matrix, MATRIX_ASSET), (run, RUN_ASSET)):
+        if path.name != name:
+            raise ReleaseError(f"Release asset must be named {name}")
+    raw_assets = {matrix.name: matrix.read_bytes(), run.name: run.read_bytes()}
+    matrices = publication_matrices(json.loads(raw_assets[RUN_ASSET], object_pairs_hook=unique_object))
+    compact = json.loads(raw_assets[MATRIX_ASSET], object_pairs_hook=unique_object)
+    # Canonical JSON comparison also distinguishes booleans from integers.
+    if json.dumps(compact, sort_keys=True) != json.dumps(matrices.matrix, sort_keys=True):
+        raise ReleaseError(f"{MATRIX_ASSET} must exactly match the compact results derived from {RUN_ASSET}")
+    if matrices.run["codex_version"] != version.value or matrices.run["collector"]["commit"] != commit:
         raise ReleaseError("Matrix Codex version and collector commit must match the publication arguments")
     completed = completed_catalog(github, repository)
     if version.value in completed:
@@ -243,17 +251,20 @@ def publish(github: GitHub, repository: str, requested: str, asset: Path, commit
             "body": f"CLI User-Agent matrix for Codex {version.value}.\n\nCollector commit: `{commit}`.\n",
             "draft": True, "prerelease": False,
         }, "POST")
-    github.command(["release", "upload", tag, str(asset), "--repo", repository, "--clobber"])
+    github.command(["release", "upload", tag, str(matrix), str(run), "--repo", repository, "--clobber"])
     uploaded = github.api(f"repos/{repository}/releases/{draft['id']}")
-    matches = [item for item in uploaded["assets"] if item.get("name") == ASSET]
-    if len(uploaded["assets"]) != 1 or len(matches) != 1 or matches[0].get("state") != "uploaded" or matches[0].get("size") != len(raw):
-        raise ReleaseError(f"Draft {tag}: uploaded asset is absent, incomplete, or has the wrong size")
-    downloaded = github.command([
-        "api", f"repos/{repository}/releases/assets/{matches[0]['id']}",
-        "--header", "Accept: application/octet-stream",
-    ])
-    if downloaded != raw:
-        raise ReleaseError(f"Draft {tag}: downloaded asset differs from the collected matrix")
+    if len(uploaded["assets"]) != len(ASSETS):
+        raise ReleaseError(f"Draft {tag}: expected exactly {', '.join(ASSETS)}")
+    for name, raw in raw_assets.items():
+        matches = [item for item in uploaded["assets"] if item.get("name") == name]
+        if len(matches) != 1 or matches[0].get("state") != "uploaded" or matches[0].get("size") != len(raw):
+            raise ReleaseError(f"Draft {tag}: {name} is absent, incomplete, or has the wrong size")
+        downloaded = github.command([
+            "api", f"repos/{repository}/releases/assets/{matches[0]['id']}",
+            "--header", "Accept: application/octet-stream",
+        ])
+        if downloaded != raw:
+            raise ReleaseError(f"Draft {tag}: downloaded {name} differs from the collected results")
     # Workflow concurrency serializes discover/collect/publish across all runs.
     completed = completed_catalog(github, repository)
     latest = all(version_key(version) > version_key(item.version) for item in completed.values())
@@ -271,7 +282,8 @@ def main() -> None:
         command.add_argument("--repository", required=True)
         command.add_argument("--version", required=name == "publish")
         if name == "publish":
-            command.add_argument("--asset", type=Path, required=True)
+            command.add_argument("--matrix", type=Path, required=True)
+            command.add_argument("--run", type=Path, required=True)
             command.add_argument("--collector-commit", required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):
@@ -284,7 +296,7 @@ def main() -> None:
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
                     output.write(f"version={result['version']}\nneeded={str(result['needed']).lower()}\n")
         else:
-            result = publish(github, args.repository, args.version, args.asset, args.collector_commit)
+            result = publish(github, args.repository, args.version, args.matrix, args.run, args.collector_commit)
         print(json.dumps(result))
     except (ReleaseError, MatrixError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

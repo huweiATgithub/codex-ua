@@ -104,7 +104,7 @@ jobs:
           pattern: platform-*
           path: .local/records
           merge-multiple: true
-      - name: Assemble the complete matrix
+      - name: Assemble the matrix and run details
         env:
           CODEX_VERSION: ${{ needs.discover.outputs.version }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
@@ -112,10 +112,10 @@ jobs:
           python scripts/matrix.py
           --version "$CODEX_VERSION"
           --input-dir .local/records
-          --output .local/ua-matrix.json
+          --output-dir .local
           --collector-commit "$GITHUB_SHA"
           --run-url "$RUN_URL"
-      - name: Publish the versioned release asset
+      - name: Publish the versioned release assets
         env:
           GH_TOKEN: ${{ github.token }}
           CODEX_VERSION: ${{ needs.discover.outputs.version }}
@@ -123,5 +123,6 @@ jobs:
           python scripts/releases.py publish
           --repository "$GITHUB_REPOSITORY"
           --version "$CODEX_VERSION"
-          --asset .local/ua-matrix.json
+          --matrix .local/ua-matrix.json
+          --run .local/ua-matrix.run.json
           --collector-commit "$GITHUB_SHA"

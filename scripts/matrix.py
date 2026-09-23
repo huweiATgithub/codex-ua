@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble six independently collected platform records into a UA matrix."""
+"""Assemble six platform records into compact and detailed UA matrices."""
 
 from __future__ import annotations
 
@@ -235,7 +235,7 @@ def unique_object(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
-def parse_published_matrix(value: object) -> dict:
+def parse_run_matrix(value: object) -> dict:
     values = object_fields(
         value,
         {"schema_version", "codex_version", "upstream_release", "collector", "platforms"},
@@ -272,6 +272,28 @@ def parse_published_matrix(value: object) -> dict:
     }
 
 
+@dataclass(frozen=True)
+class PublicationMatrices:
+    run: dict
+    matrix: dict
+
+
+def publication_matrices(value: object) -> PublicationMatrices:
+    run = parse_run_matrix(value)
+    matrix = {
+        "schema_version": 1,
+        "codex_version": run["codex_version"],
+        "platforms": {
+            platform: {
+                mode: observation["clients"][mode]["user_agent"]
+                for mode in ("interactive", "exec")
+            }
+            for platform, observation in run["platforms"].items()
+        },
+    }
+    return PublicationMatrices(run=run, matrix=matrix)
+
+
 def assemble_matrix(version: str, input_dir: Path, collector_commit: str, run_url: str) -> dict:
     requested_version = StableVersion.parse(version)
     collector = CollectorProvenance.parse({"commit": collector_commit, "run_url": run_url})
@@ -303,14 +325,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
     parser.add_argument("--input-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--collector-commit", required=True)
     parser.add_argument("--run-url", required=True)
     args = parser.parse_args()
     try:
-        matrix = assemble_matrix(args.version, args.input_dir, args.collector_commit, args.run_url)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(matrix, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        results = publication_matrices(
+            assemble_matrix(args.version, args.input_dir, args.collector_commit, args.run_url)
+        )
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        for filename, value in (("ua-matrix.json", results.matrix), ("ua-matrix.run.json", results.run)):
+            (args.output_dir / filename).write_text(
+                json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
     except (MatrixError, OSError) as error:
         parser.error(str(error))
 

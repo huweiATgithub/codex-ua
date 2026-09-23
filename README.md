@@ -7,7 +7,7 @@ environments, not an exhaustive list of possible Codex User-Agents.
 
 ## Download
 
-Fetch the matrix for a known Codex version:
+Fetch the compact matrix for a known Codex version:
 
 ```sh
 curl -fL https://github.com/huweiATgithub/codex-ua/releases/download/v0.156.1/ua-matrix.json
@@ -19,29 +19,36 @@ Follow the highest successfully collected stable version:
 curl -fL https://github.com/huweiATgithub/codex-ua/releases/latest/download/ua-matrix.json
 ```
 
+For detailed collection results, use `ua-matrix.run.json` in either download URL.
 Generated data is stored in release assets. The repository contains the collector,
-workflow, schema, tests, and documentation.
+workflow, schemas, tests, and documentation.
 
 ## JSON format
 
-The [JSON Schema](schema/ua-matrix.schema.json) defines format version 1.
-The top-level fields are `schema_version`, `codex_version`, `upstream_release`,
-`collector`, and `platforms`. The collector records its source commit and workflow
-run URL.
+Each release provides two JSON files with independently versioned schemas.
+Both currently use `schema_version: 1` and identify the collected `codex_version`.
+
+`ua-matrix.json` follows the [matrix schema](schema/ua-matrix.schema.json).
+Its top-level fields are `schema_version`, `codex_version`, and `platforms`.
 
 `platforms` has six keys: `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64`,
-`windows-x64`, and `windows-arm64`. Each entry records its source binary URL,
-collection time, OS and runner metadata, terminal environment, and `clients`.
-Read a UA using, for example:
+`windows-x64`, and `windows-arm64`. Each entry maps `interactive` and `exec`
+directly to UA strings. Read a UA using, for example:
 
 ```text
-platforms["linux-x64"].clients.interactive.user_agent
-platforms["windows-arm64"].clients.exec.user_agent
+platforms["linux-x64"].interactive
+platforms["windows-arm64"].exec
 ```
 
-Every client entry identifies its collection method. The exec entry also contains
-`http_capture`, recording the UA and originator actually sent to a loopback server.
-Preserve the UA string verbatim when consuming it.
+`ua-matrix.run.json` follows the [run schema](schema/ua-matrix.run.schema.json)
+and describes one collection run. It adds `upstream_release` and `collector`
+provenance, including the source commit and workflow run URL. Each platform records
+its binary URL, collection time, OS and runner metadata, terminal environment,
+and `clients`. Each client has a `user_agent` and collection `method`; exec also
+includes `http_capture` with the UA and originator sent to the loopback server.
+
+The compact matrix is derived from the validated run details. Corresponding UA
+strings are identical in both files. Preserve them verbatim when consuming them.
 
 ## Collection method
 
@@ -65,10 +72,11 @@ environment.
 
 ## Release policy and scheduling
 
-One published release, tagged `v<codex-version>`, contains one `ua-matrix.json`.
-The tag points to the collector commit. All six platforms and both client modes
-must succeed before the workflow publishes. Published versions are skipped;
-there is no periodic recollection of an unchanged Codex version.
+One published release, tagged `v<codex-version>`, contains `ua-matrix.json` and
+`ua-matrix.run.json`. The tag points to the collector commit. All six platforms
+and both client modes must succeed, and both assets must be uploaded and verified,
+before the workflow publishes. Published versions are skipped; there is no
+periodic recollection of an unchanged Codex version.
 
 [Collect and publish](.github/workflows/collect.yml) runs hourly at minute 17 UTC.
 The first automatic run collects the current stable version. Subsequent runs

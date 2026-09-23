@@ -8,7 +8,7 @@ import unittest
 
 import jsonschema
 
-from scripts.matrix import MatrixError, assemble_matrix, parse_published_matrix
+from scripts.matrix import MatrixError, assemble_matrix, parse_run_matrix, publication_matrices
 
 
 VERSION = "0.155.1"
@@ -174,39 +174,95 @@ class MatrixTests(unittest.TestCase):
             with self.subTest(options=options), self.assertRaises(MatrixError):
                 self.assemble(**options)
 
-    def test_invalid_matrix_does_not_create_output_file(self):
-        (self.input_dir / "macos-arm64.json").unlink()
-        output = self.input_dir / "ua-matrix.json"
-        result = subprocess.run(
+    def run_cli(self, output_dir):
+        return subprocess.run(
             [sys.executable, "scripts/matrix.py", "--version", VERSION,
-             "--input-dir", str(self.input_dir), "--output", str(output),
+             "--input-dir", str(self.input_dir), "--output-dir", str(output_dir),
              "--collector-commit", COMMIT, "--run-url", RUN_URL],
             text=True, capture_output=True, check=False,
         )
+
+    def test_cli_writes_both_publication_assets(self):
+        output_dir = self.input_dir / "output"
+        result = self.run_cli(output_dir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({path.name for path in output_dir.iterdir()}, {"ua-matrix.json", "ua-matrix.run.json"})
+        matrix = json.loads((output_dir / "ua-matrix.json").read_text(encoding="utf-8"))
+        run = json.loads((output_dir / "ua-matrix.run.json").read_text(encoding="utf-8"))
+        self.assertEqual(run, self.assemble())
+        self.assertEqual(matrix, publication_matrices(run).matrix)
+
+    def test_invalid_matrix_does_not_create_either_output_file(self):
+        (self.input_dir / "macos-arm64.json").unlink()
+        output_dir = self.input_dir / "output"
+        result = self.run_cli(output_dir)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing platforms: macos-arm64", result.stderr)
-        self.assertFalse(output.exists())
+        self.assertFalse(output_dir.exists())
 
-    def test_published_schema_accepts_complete_matrix_and_requires_each_platform(self):
+    def test_schemas_accept_complete_results_and_require_each_platform(self):
+        results = publication_matrices(self.assemble())
+        for filename, value in (("ua-matrix", results.matrix), ("ua-matrix.run", results.run)):
+            schema = json.loads(Path(f"schema/{filename}.schema.json").read_text(encoding="utf-8"))
+            jsonschema.Draft202012Validator.check_schema(schema)
+            validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
+            validator.validate(value)
+            for platform in PLATFORMS:
+                incomplete = copy.deepcopy(value)
+                del incomplete["platforms"][platform]
+                with self.subTest(schema=filename, platform=platform), self.assertRaises(jsonschema.ValidationError):
+                    validator.validate(incomplete)
+
+    def test_compact_schema_requires_exact_modes_and_rejects_metadata(self):
         schema = json.loads(Path("schema/ua-matrix.schema.json").read_text(encoding="utf-8"))
-        jsonschema.Draft202012Validator.check_schema(schema)
-        validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
-        result = self.assemble()
-        validator.validate(result)
-        for platform in PLATFORMS:
-            incomplete = copy.deepcopy(result)
-            del incomplete["platforms"][platform]
-            with self.subTest(platform=platform), self.assertRaises(jsonschema.ValidationError):
-                validator.validate(incomplete)
+        validator = jsonschema.Draft202012Validator(schema)
+        original = publication_matrices(self.assemble()).matrix
+        mutations = []
+        for mode in ("interactive", "exec"):
+            missing_mode = copy.deepcopy(original)
+            del missing_mode["platforms"]["linux-x64"][mode]
+            mutations.append(missing_mode)
+        detailed = copy.deepcopy(original)
+        detailed["collector"] = {"commit": COMMIT, "run_url": RUN_URL}
+        mutations.append(detailed)
+        extra_platform = copy.deepcopy(original)
+        extra_platform["platforms"]["other"] = original["platforms"]["linux-x64"]
+        mutations.append(extra_platform)
+        extra_mode = copy.deepcopy(original)
+        extra_mode["platforms"]["linux-x64"]["other"] = "UA"
+        mutations.append(extra_mode)
+        object_ua = copy.deepcopy(original)
+        object_ua["platforms"]["linux-x64"]["exec"] = {"user_agent": "UA"}
+        mutations.append(object_ua)
+        for value in mutations:
+            with self.subTest(value=value), self.assertRaises(jsonschema.ValidationError):
+                validator.validate(value)
 
-    def test_published_parser_returns_an_independent_normalized_matrix(self):
+    def test_publication_matrices_preserve_all_uas_without_metadata(self):
         original = self.assemble()
-        parsed = parse_published_matrix(original)
+        results = publication_matrices(original)
+        self.assertEqual(results.run, original)
+        self.assertEqual(set(results.matrix), {"schema_version", "codex_version", "platforms"})
+        self.assertEqual(results.matrix["schema_version"], 1)
+        self.assertEqual(results.matrix["codex_version"], VERSION)
+        self.assertEqual(set(results.matrix["platforms"]), set(PLATFORMS))
+        for platform in PLATFORMS:
+            clients = results.matrix["platforms"][platform]
+            self.assertEqual(set(clients), {"interactive", "exec"})
+            for mode in ("interactive", "exec"):
+                self.assertEqual(clients[mode], original["platforms"][platform]["clients"][mode]["user_agent"])
+        original["platforms"]["linux-x64"]["clients"]["exec"]["user_agent"] = "tampered"
+        self.assertNotEqual(results.run["platforms"]["linux-x64"]["clients"]["exec"]["user_agent"], "tampered")
+        self.assertNotEqual(results.matrix["platforms"]["linux-x64"]["exec"], "tampered")
+
+    def test_run_parser_returns_an_independent_normalized_matrix(self):
+        original = self.assemble()
+        parsed = parse_run_matrix(original)
         self.assertEqual(parsed, original)
         original["platforms"]["linux-x64"]["clients"]["exec"]["http_capture"]["originator"] = "tampered"
         self.assertEqual(parsed["platforms"]["linux-x64"]["clients"]["exec"]["http_capture"]["originator"], "codex_exec")
 
-    def test_published_parser_rejects_incomplete_matrix_and_tampered_metadata(self):
+    def test_run_parser_and_publication_reject_incomplete_matrix_and_tampered_metadata(self):
         original = self.assemble()
         mutations = []
         incomplete = copy.deepcopy(original)
@@ -223,8 +279,9 @@ class MatrixTests(unittest.TestCase):
         hidden_version["platforms"]["linux-x64"]["codex_version"] = "0.154.0"
         mutations.append(hidden_version)
         for invalid in mutations:
-            with self.subTest(matrix=invalid), self.assertRaises(MatrixError):
-                parse_published_matrix(invalid)
+            for parse in (parse_run_matrix, publication_matrices):
+                with self.subTest(parser=parse.__name__, matrix=invalid), self.assertRaises(MatrixError):
+                    parse(invalid)
 
 
 if __name__ == "__main__":

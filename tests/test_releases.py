@@ -19,7 +19,10 @@ def catalog_release(version, **updates):
     release = {
         "id": 1, "tag_name": f"v{version}", "draft": False, "prerelease": False,
         "published_at": "2026-09-23T00:00:00Z",
-        "assets": [{"name": "ua-matrix.json", "state": "uploaded", "size": 123}],
+        "assets": [
+            {"name": "ua-matrix.json", "state": "uploaded", "size": 123},
+            {"name": "ua-matrix.run.json", "state": "uploaded", "size": 456},
+        ],
     }
     release.update(updates)
     return release
@@ -49,7 +52,7 @@ def source(name):
     return {"encoding": "base64", "content": base64.b64encode(value.encode()).decode()}
 
 
-def matrix_payload():
+def run_payload():
     platforms = {}
     for platform, target in releases.TARGETS.items():
         system = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}[platform.split("-")[0]]
@@ -74,6 +77,17 @@ def matrix_payload():
         "upstream_release": "https://github.com/openai/codex/releases/tag/rust-v0.10.0",
         "collector": {"commit": COMMIT, "run_url": "https://github.com/owner/catalog/actions/runs/123"},
         "platforms": platforms,
+    }
+
+
+def matrix_payload(run):
+    return {
+        "schema_version": 1,
+        "codex_version": run["codex_version"],
+        "platforms": {
+            platform: {mode: client["user_agent"] for mode, client in record["clients"].items()}
+            for platform, record in run["platforms"].items()
+        },
     }
 
 
@@ -151,11 +165,22 @@ class DiscoveryTests(unittest.TestCase):
         github.by_tag.assert_not_called()
 
     def test_partial_published_catalog_is_an_error(self):
-        for asset in ([], [{"name": "ua-matrix.json", "state": "uploaded", "size": 0}]):
-            with self.subTest(asset=asset):
-                github = self.github([catalog_release("0.10.0", assets=asset)])
-                with self.assertRaisesRegex(releases.ReleaseError, "never overwritten"):
-                    releases.discover(github, REPOSITORY)
+        for name in ("ua-matrix.json", "ua-matrix.run.json"):
+            for issue in ("missing", "empty", "incomplete", "duplicate"):
+                with self.subTest(name=name, issue=issue):
+                    release = catalog_release("0.10.0")
+                    asset = next(asset for asset in release["assets"] if asset["name"] == name)
+                    if issue == "missing":
+                        release["assets"].remove(asset)
+                    elif issue == "empty":
+                        asset["size"] = 0
+                    elif issue == "incomplete":
+                        asset["state"] = "new"
+                    else:
+                        release["assets"].append(copy.deepcopy(asset))
+                    github = self.github([release])
+                    with self.assertRaisesRegex(releases.ReleaseError, "never overwritten"):
+                        releases.discover(github, REPOSITORY)
 
     def test_missing_upstream_binary_defers_automatic_but_errors_manual(self):
         github = self.github()
@@ -201,14 +226,22 @@ class PublicationTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.asset = Path(directory.name) / "ua-matrix.json"
-        self.asset.write_text(json.dumps(matrix_payload()))
+        self.matrix = Path(directory.name) / "ua-matrix.json"
+        self.run = Path(directory.name) / "ua-matrix.run.json"
+        payload = run_payload()
+        self.run.write_text(json.dumps(payload))
+        self.matrix.write_text(json.dumps(matrix_payload(payload)))
         self.github = Mock(spec=releases.GitHub)
         self.github.releases.side_effect = lambda repository: iter([])
         self.github.by_tag.return_value = None
         self.api_calls = []
         self.github.api.side_effect = self.api
-        self.github.command.side_effect = lambda argv: self.asset.read_bytes() if argv[0] == "api" else b""
+        self.github.command.side_effect = self.command
+
+    def command(self, argv):
+        if argv[0] != "api":
+            return b""
+        return self.matrix.read_bytes() if argv[1].endswith("/100") else self.run.read_bytes()
 
     def api(self, endpoint, payload=None, method="GET"):
         self.api_calls.append((endpoint, copy.deepcopy(payload), method))
@@ -218,10 +251,13 @@ class PublicationTests(unittest.TestCase):
             return {"id": 10}
         if method == "PATCH":
             return {"html_url": "https://github.com/owner/catalog/releases/tag/v0.10.0"}
-        return {"assets": [{"id": 100, "name": "ua-matrix.json", "state": "uploaded", "size": self.asset.stat().st_size}]}
+        return {"assets": [
+            {"id": 100, "name": "ua-matrix.json", "state": "uploaded", "size": self.matrix.stat().st_size},
+            {"id": 101, "name": "ua-matrix.run.json", "state": "uploaded", "size": self.run.stat().st_size},
+        ]}
 
     def publish(self):
-        return releases.publish(self.github, REPOSITORY, "0.10.0", self.asset, COMMIT)
+        return releases.publish(self.github, REPOSITORY, "0.10.0", self.matrix, self.run, COMMIT)
 
     def test_new_release_is_drafted_verified_then_published(self):
         result = self.publish()
@@ -232,6 +268,13 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(create["target_commitish"], COMMIT)
         publish = next(payload for _, payload, method in self.api_calls if method == "PATCH")
         self.assertEqual(publish["make_latest"], "true")
+        upload = self.github.command.call_args_list[0].args[0]
+        self.assertIn(str(self.matrix), upload)
+        self.assertIn(str(self.run), upload)
+        self.assertEqual(
+            [call.args[0][1] for call in self.github.command.call_args_list[1:]],
+            [f"repos/{REPOSITORY}/releases/assets/100", f"repos/{REPOSITORY}/releases/assets/101"],
+        )
 
     def test_backfill_does_not_regress_latest(self):
         self.github.releases.side_effect = lambda repository: iter([catalog_release("0.11.0")])
@@ -270,27 +313,89 @@ class PublicationTests(unittest.TestCase):
         self.github.api.assert_not_called()
         self.github.command.assert_not_called()
 
-    def test_matrix_commit_mismatch_stops_before_network_calls(self):
-        matrix = matrix_payload()
-        matrix["collector"]["commit"] = "b" * 40
-        self.asset.write_text(json.dumps(matrix))
+    def test_run_commit_mismatch_stops_before_network_calls(self):
+        run = run_payload()
+        run["collector"]["commit"] = "b" * 40
+        self.run.write_text(json.dumps(run))
         with self.assertRaisesRegex(releases.ReleaseError, "must match"):
             self.publish()
         self.github.releases.assert_not_called()
 
-    def test_incomplete_matrix_stops_before_network_calls(self):
-        matrix = matrix_payload()
-        del matrix["platforms"]["windows-arm64"]
-        self.asset.write_text(json.dumps(matrix))
+    def test_incomplete_run_stops_before_network_calls(self):
+        run = run_payload()
+        del run["platforms"]["windows-arm64"]
+        self.run.write_text(json.dumps(run))
         with self.assertRaises(releases.MatrixError):
             self.publish()
         self.github.releases.assert_not_called()
 
-    def test_asset_readback_mismatch_leaves_draft(self):
-        self.github.command.side_effect = lambda argv: b"different" if argv[0] == "api" else b""
-        with self.assertRaisesRegex(releases.ReleaseError, "differs"):
-            self.publish()
-        self.assertFalse(any(method == "PATCH" for _, _, method in self.api_calls))
+    def test_compact_mismatch_stops_before_network_calls(self):
+        matrix = matrix_payload(run_payload())
+        for issue in ("ua", "schema_type", "missing", "metadata"):
+            with self.subTest(issue=issue):
+                changed = copy.deepcopy(matrix)
+                if issue == "ua":
+                    changed["platforms"]["linux-x64"]["exec"] += " changed"
+                elif issue == "schema_type":
+                    changed["schema_version"] = True
+                elif issue == "missing":
+                    del changed["platforms"]["windows-arm64"]
+                else:
+                    changed["collector"] = run_payload()["collector"]
+                self.matrix.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(releases.ReleaseError, "must exactly match"):
+                    self.publish()
+                self.github.releases.assert_not_called()
+
+    def test_missing_or_malformed_local_asset_stops_before_network_calls(self):
+        for asset in (self.matrix, self.run):
+            raw = asset.read_bytes()
+            for issue in ("missing", "malformed"):
+                with self.subTest(asset=asset.name, issue=issue):
+                    if issue == "missing":
+                        asset.unlink()
+                    else:
+                        asset.write_bytes(b"{")
+                    with self.assertRaises((OSError, ValueError)):
+                        self.publish()
+                    self.github.releases.assert_not_called()
+                    asset.write_bytes(raw)
+
+    def test_uploaded_asset_failure_leaves_draft(self):
+        for name in ("ua-matrix.json", "ua-matrix.run.json"):
+            for issue in ("missing", "wrong_size", "incomplete", "duplicate"):
+                with self.subTest(name=name, issue=issue):
+                    self.api_calls.clear()
+
+                    def damaged_api(endpoint, payload=None, method="GET"):
+                        value = self.api(endpoint, payload, method)
+                        if method == "GET" and "assets" in value:
+                            asset = next(asset for asset in value["assets"] if asset["name"] == name)
+                            if issue == "missing":
+                                value["assets"].remove(asset)
+                            elif issue == "wrong_size":
+                                asset["size"] += 1
+                            elif issue == "incomplete":
+                                asset["state"] = "new"
+                            else:
+                                value["assets"].append(copy.deepcopy(asset))
+                        return value
+
+                    self.github.api.side_effect = damaged_api
+                    with self.assertRaises(releases.ReleaseError):
+                        self.publish()
+                    self.assertFalse(any(method == "PATCH" for _, _, method in self.api_calls))
+
+    def test_either_asset_readback_mismatch_leaves_draft(self):
+        for asset_id in (100, 101):
+            with self.subTest(asset_id=asset_id):
+                self.api_calls.clear()
+                self.github.command.side_effect = lambda argv: (
+                    b"different" if argv[0] == "api" and argv[1].endswith(f"/{asset_id}") else self.command(argv)
+                )
+                with self.assertRaisesRegex(releases.ReleaseError, "differs"):
+                    self.publish()
+                self.assertFalse(any(method == "PATCH" for _, _, method in self.api_calls))
 
 
 class TransportTests(unittest.TestCase):

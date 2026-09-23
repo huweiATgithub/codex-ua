@@ -7,6 +7,7 @@ import argparse
 import base64
 from dataclasses import dataclass
 from datetime import datetime
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ import re
 import subprocess
 import sys
 
-from matrix import MatrixError, StableVersion, TARGETS, publication_matrices, unique_object
+from matrix import MatrixError, PublicationMatrices, StableVersion, TARGETS, publication_matrices, unique_object
 
 
 MATRIX_ASSET = "ua-matrix.json"
@@ -203,6 +204,23 @@ def verify_tag_target(github: GitHub, repository: str, tag: str, commit: str) ->
         raise ReleaseError(f"Tag {tag} already targets another commit; inspect the draft/tag before retrying")
 
 
+def release_body(matrices: PublicationMatrices) -> str:
+    lines = [
+        f"CLI User-Agent matrix for Codex {matrices.matrix['codex_version']}.",
+        "",
+        "These samples reflect the recorded collection environments.",
+        "",
+        "| Platform | Client | User-Agent |",
+        "| --- | --- | --- |",
+    ]
+    for platform, clients in matrices.matrix["platforms"].items():
+        for mode, user_agent in clients.items():
+            cell = escape(user_agent).replace("|", "&#124;")
+            lines.append(f"| {platform} | {mode} | <code>{cell}</code> |")
+    lines.extend(["", f"Collector commit: `{matrices.run['collector']['commit']}`.", ""])
+    return "\n".join(lines)
+
+
 def publish(github: GitHub, repository: str, requested: str, matrix: Path, run: Path, commit: str) -> dict:
     version = StableVersion.parse(requested)
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
@@ -218,6 +236,7 @@ def publish(github: GitHub, repository: str, requested: str, matrix: Path, run: 
         raise ReleaseError(f"{MATRIX_ASSET} must exactly match the compact results derived from {RUN_ASSET}")
     if matrices.run["codex_version"] != version.value or matrices.run["collector"]["commit"] != commit:
         raise ReleaseError("Matrix Codex version and collector commit must match the publication arguments")
+    body = release_body(matrices)
     completed = completed_catalog(github, repository)
     if version.value in completed:
         return {"published": False, "reason": f"v{version.value} is already published"}
@@ -248,7 +267,7 @@ def publish(github: GitHub, repository: str, requested: str, matrix: Path, run: 
                 raise
         draft = github.api(f"repos/{repository}/releases", {
             "tag_name": tag, "target_commitish": commit, "name": f"Codex {version.value} UA matrix",
-            "body": f"CLI User-Agent matrix for Codex {version.value}.\n\nCollector commit: `{commit}`.\n",
+            "body": body,
             "draft": True, "prerelease": False,
         }, "POST")
     github.command(["release", "upload", tag, str(matrix), str(run), "--repo", repository, "--clobber"])
@@ -269,6 +288,7 @@ def publish(github: GitHub, repository: str, requested: str, matrix: Path, run: 
     completed = completed_catalog(github, repository)
     latest = all(version_key(version) > version_key(item.version) for item in completed.values())
     release = github.api(f"repos/{repository}/releases/{draft['id']}", {
+        "body": body,
         "draft": False, "prerelease": False, "make_latest": "true" if latest else "false",
     }, "PATCH")
     return {"published": True, "tag": tag, "latest": latest, "url": release["html_url"]}

@@ -1,5 +1,6 @@
 import base64
 import copy
+from html import unescape
 import json
 from pathlib import Path
 import sys
@@ -259,6 +260,20 @@ class PublicationTests(unittest.TestCase):
     def publish(self):
         return releases.publish(self.github, REPOSITORY, "0.10.0", self.matrix, self.run, COMMIT)
 
+    def assert_release_body(self, body, matrix):
+        self.assertIn(f"CLI User-Agent matrix for Codex {matrix['codex_version']}.", body)
+        self.assertIn(f"Collector commit: `{COMMIT}`.", body)
+        self.assertIn("| Platform | Client | User-Agent |", body)
+        rows = [line.split(" | ") for line in body.splitlines() if "<code>" in line]
+        self.assertEqual(len(rows), 12)
+        observed = {}
+        for platform, mode, cell in rows:
+            self.assertTrue(cell.startswith("<code>") and cell.endswith("</code> |"))
+            observed.setdefault(platform.removeprefix("| "), {})[mode] = unescape(
+                cell.removeprefix("<code>").removesuffix("</code> |")
+            )
+        self.assertEqual(observed, matrix["platforms"])
+
     def test_new_release_is_drafted_verified_then_published(self):
         result = self.publish()
         self.assertTrue(result["published"])
@@ -266,8 +281,10 @@ class PublicationTests(unittest.TestCase):
         create = next(payload for _, payload, method in self.api_calls if method == "POST")
         self.assertTrue(create["draft"])
         self.assertEqual(create["target_commitish"], COMMIT)
+        self.assert_release_body(create["body"], json.loads(self.matrix.read_text()))
         publish = next(payload for _, payload, method in self.api_calls if method == "PATCH")
         self.assertEqual(publish["make_latest"], "true")
+        self.assertEqual(publish["body"], create["body"])
         upload = self.github.command.call_args_list[0].args[0]
         self.assertIn(str(self.matrix), upload)
         self.assertIn(str(self.run), upload)
@@ -297,6 +314,22 @@ class PublicationTests(unittest.TestCase):
         self.github.by_tag.assert_not_called()
         self.assertFalse(any(method == "POST" for _, _, method in self.api_calls))
         self.assertIn("--clobber", self.github.command.call_args_list[0].args[0])
+        publish = next(payload for _, payload, method in self.api_calls if method == "PATCH")
+        self.assert_release_body(publish["body"], json.loads(self.matrix.read_text()))
+
+    def test_release_body_preserves_ua_with_table_and_html_characters(self):
+        run = run_payload()
+        for client in run["platforms"]["linux-x64"]["clients"].values():
+            client["user_agent"] = client["user_agent"].replace("Linux 1.0", "Linux `custom` | <build> & 1.0")
+            if "http_capture" in client:
+                client["http_capture"]["user_agent"] = client["user_agent"]
+        matrix = matrix_payload(run)
+        self.run.write_text(json.dumps(run))
+        self.matrix.write_text(json.dumps(matrix))
+        self.publish()
+        publish = next(payload for _, payload, method in self.api_calls if method == "PATCH")
+        self.assert_release_body(publish["body"], matrix)
+        self.assertIn("`custom` &#124; &lt;build&gt; &amp; 1.0", publish["body"])
 
     def test_draft_commit_mismatch_stops_before_upload(self):
         draft = {"id": 10, "tag_name": "v0.10.0", "draft": True, "target_commitish": "b" * 40}

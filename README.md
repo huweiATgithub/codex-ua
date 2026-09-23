@@ -20,6 +20,7 @@ curl -fL https://github.com/huweiATgithub/codex-ua/releases/latest/download/ua-m
 ```
 
 For detailed collection results, use `ua-matrix.run.json` in either download URL.
+The release text also shows the matrix as a table of platforms, clients, and UAs.
 Generated data is stored in release assets. The repository contains the collector,
 workflow, schemas, tests, and documentation.
 

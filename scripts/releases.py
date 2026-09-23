@@ -172,7 +172,7 @@ def discover(github: GitHub, repository: str, requested: str | None = None) -> d
         for upstream in github.releases(UPSTREAM):
             candidate = release_version(upstream, "rust-v")
             if candidate is not None and version_key(candidate) >= version_key(oldest):
-                if candidate.value not in completed:
+                if candidate.value not in completed and not missing_binary_assets(upstream):
                     candidates.append((candidate, upstream))
                 if candidate == oldest:
                     boundary_found = True
@@ -180,7 +180,7 @@ def discover(github: GitHub, repository: str, requested: str | None = None) -> d
         if not boundary_found:
             raise ReleaseError(f"Upstream history no longer contains collected rust-v{oldest.value}")
         if not candidates:
-            return {"needed": False, "version": "", "reason": "No uncollected stable releases"}
+            return {"needed": False, "version": "", "reason": "No uncollected stable releases with complete binaries"}
         version, upstream = min(candidates, key=lambda item: version_key(item[0]))
     missing = missing_binary_assets(upstream)
     if missing:
@@ -214,7 +214,12 @@ def publish(github: GitHub, repository: str, requested: str, asset: Path, commit
     if version.value in completed:
         return {"published": False, "reason": f"v{version.value} is already published"}
     tag = f"v{version.value}"
-    draft = github.by_tag(repository, tag)
+    # REST lookup by tag only returns published releases. The authenticated
+    # release listing also includes drafts left by interrupted publication.
+    matches = [item for item in github.releases(repository) if item.get("tag_name") == tag]
+    if len(matches) > 1:
+        raise ReleaseError(f"Multiple releases use {tag}; inspect them before retrying")
+    draft = matches[0] if matches else None
     if draft is not None and not draft.get("draft"):
         raise ReleaseError(f"Existing release {tag} is not a draft; inspect it explicitly")
     if draft:

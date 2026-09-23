@@ -116,6 +116,19 @@ class DiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.10.0")
 
+    def test_incomplete_older_release_does_not_block_newer_complete_release(self):
+        github = self.github(
+            [catalog_release("0.9.0")],
+            [upstream_release("0.11.0"), upstream_release("0.10.0", assets=[]), upstream_release("0.9.0")],
+        )
+        self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.11.0")
+        # Once its binaries arrive, the older release remains eligible.
+        github = self.github(
+            [catalog_release("0.9.0"), catalog_release("0.11.0", published_at="2026-09-24T00:00:00Z")],
+            [upstream_release("0.11.0"), upstream_release("0.10.0"), upstream_release("0.9.0")],
+        )
+        self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.10.0")
+
     def test_manual_backfill_does_not_lower_automatic_boundary(self):
         github = self.github(
             [catalog_release("0.7.0", published_at="2026-09-24T00:00:00Z"), catalog_release("0.9.0")],
@@ -235,15 +248,26 @@ class PublicationTests(unittest.TestCase):
         self.github.command.assert_not_called()
 
     def test_draft_resume_clobbers_only_unpublished_asset(self):
-        self.github.by_tag.return_value = {"id": 10, "draft": True, "target_commitish": COMMIT}
+        draft = {"id": 10, "tag_name": "v0.10.0", "draft": True, "target_commitish": COMMIT}
+        self.github.releases.side_effect = lambda repository: iter([draft])
         self.assertTrue(self.publish()["published"])
+        self.github.by_tag.assert_not_called()
         self.assertFalse(any(method == "POST" for _, _, method in self.api_calls))
         self.assertIn("--clobber", self.github.command.call_args_list[0].args[0])
 
     def test_draft_commit_mismatch_stops_before_upload(self):
-        self.github.by_tag.return_value = {"id": 10, "draft": True, "target_commitish": "b" * 40}
+        draft = {"id": 10, "tag_name": "v0.10.0", "draft": True, "target_commitish": "b" * 40}
+        self.github.releases.side_effect = lambda repository: iter([draft])
         with self.assertRaisesRegex(releases.ReleaseError, "targets another commit"):
             self.publish()
+        self.github.command.assert_not_called()
+
+    def test_ambiguous_drafts_stop_before_upload(self):
+        draft = {"tag_name": "v0.10.0", "draft": True, "target_commitish": COMMIT}
+        self.github.releases.side_effect = lambda repository: iter([draft, draft])
+        with self.assertRaisesRegex(releases.ReleaseError, "Multiple releases"):
+            self.publish()
+        self.github.api.assert_not_called()
         self.github.command.assert_not_called()
 
     def test_matrix_commit_mismatch_stops_before_network_calls(self):

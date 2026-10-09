@@ -14,7 +14,10 @@ import re
 import subprocess
 import sys
 
-from matrix import MatrixError, PublicationMatrices, StableVersion, TARGETS, publication_matrices, unique_object
+try:
+    from .matrix import MatrixError, PublicationMatrices, StableVersion, TARGETS, publication_matrices, unique_object
+except ImportError:
+    from matrix import MatrixError, PublicationMatrices, StableVersion, TARGETS, publication_matrices, unique_object
 
 
 MATRIX_ASSET = "ua-matrix.json"
@@ -190,9 +193,18 @@ def release_body(matrices: PublicationMatrices) -> str:
         "| --- | --- | --- |",
     ]
     for platform, clients in matrices.matrix["platforms"].items():
-        for mode, user_agent in clients.items():
+        for mode in ("CLI", "Exec"):
+            user_agent = clients[mode]
             cell = escape(user_agent).replace("|", "&#124;")
             lines.append(f"| {platform} | {mode} | <code>{cell}</code> |")
+        for profile, observation in clients.get("profiles", {}).items():
+            if observation is None:
+                reason = matrices.run["platforms"][platform]["profiles"][profile]["reason"]
+                lines.append(f"| {platform} ({profile}) | unsupported | {escape(reason).replace('|', '&#124;')} |")
+            else:
+                for mode, user_agent in observation.items():
+                    cell = escape(user_agent).replace("|", "&#124;")
+                    lines.append(f"| {platform} ({profile}) | {mode} | <code>{cell}</code> |")
     lines.extend(["", f"Collector commit: `{matrices.run['collector']['commit']}`.", ""])
     return "\n".join(lines)
 

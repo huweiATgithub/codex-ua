@@ -86,17 +86,17 @@ def download_binary(url, platform_name, directory):
     return binary
 
 
-def child_environment(directory):
-    # An allowlist prevents credentials, identity overrides, proxies and terminal
-    # detection variables from leaking into the measured process.
+def child_environment(directory, *, native_terminal=False):
+    # Baseline sampling starts clean. Native applications were isolated before
+    # launch, so their complete terminal environment must reach Codex.
     allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SYSTEMDRIVE"}
-    env = {name: value for name, value in os.environ.items() if name.upper() in allowed}
+    env = dict(os.environ) if native_terminal else {name: value for name, value in os.environ.items() if name.upper() in allowed}
     home = directory / "home"
     codex_home = directory / "codex-home"
     temporary = directory / "tmp"
     for path in (home, codex_home, temporary):
         path.mkdir()
-    env.update({
+    isolated = {
         "HOME": str(home),
         "USERPROFILE": str(home),
         "XDG_CONFIG_HOME": str(home / ".config"),
@@ -108,7 +108,13 @@ def child_environment(directory):
         "TEMP": str(temporary),
         "TMP": str(temporary),
         **TERMINAL,
-    })
+    }
+    if native_terminal:
+        # The application was isolated before launch. Preserve every signal it
+        # supplied, including future terminal detection mechanisms.
+        env["CODEX_HOME"] = str(codex_home)
+    else:
+        env.update(isolated)
     # Both clients receive a loopback-only provider separately.
     (codex_home / "config.toml").write_text(
         "check_for_update_on_startup = false\n"
@@ -193,7 +199,7 @@ def tui_terminal(command, directory, env):
             os.close(master)
 
 
-def run_tui(command, directory, env, response_sent):
+def run_tui(command, directory, env, response_sent, *, native_terminal=False):
     # Fresh homes cannot reuse a daemon. Disable starting one where supported.
     help_result = subprocess.run(
         [command[0], "--help"], cwd=directory, env=env, capture_output=True,
@@ -201,6 +207,29 @@ def run_tui(command, directory, env, response_sent):
     )
     if "--no-daemon" in help_result.stdout:
         command.insert(1, "--no-daemon")
+    if native_terminal:
+        attributes = None
+        if os.name != "nt":
+            import termios
+            attributes = termios.tcgetattr(0)
+        process = subprocess.Popen(command, cwd=directory, env=env)
+        try:
+            deadline = time.monotonic() + PROCESS_TIMEOUT
+            while not response_sent.wait(0.1):
+                if process.poll() is not None:
+                    raise RuntimeError(f"Codex TUI exited ({process.returncode}) before completing a Responses request")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Codex TUI timed out before completing a Responses request")
+        finally:
+            if os.name == "nt" and process.poll() is None:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               env=env, capture_output=True, timeout=10, check=True)
+                process.wait(timeout=10)
+            else:
+                stop_process(process)
+            if attributes is not None:
+                termios.tcsetattr(0, termios.TCSANOW, attributes)
+        return
     output = queue.Queue()
     transcript = ""
     pending = ""
@@ -258,11 +287,13 @@ def response_events():
     return "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
 
 
-def capture_client(binary, mode, directory):
+def capture_client(binary, mode, directory, *, native_terminal=False):
     if mode not in ("CLI", "Exec"):
         raise ValueError(f"unsupported client mode: {mode}")
+    if native_terminal and not all(os.isatty(fd) for fd in (0, 1, 2)):
+        raise RuntimeError("native terminal capture requires the application's real PTY")
     directory.mkdir()
-    env = child_environment(directory)
+    env = child_environment(directory, native_terminal=native_terminal)
     captures = []
     unexpected = []
     response_sent = threading.Event()
@@ -317,7 +348,9 @@ def capture_client(binary, mode, directory):
         ])
         try:
             if mode == "CLI":
-                run_tui(command, directory, env, response_sent)
+                run_tui(command, directory, env, response_sent, native_terminal=native_terminal)
+            elif native_terminal:
+                subprocess.run(command, cwd=directory, env=env, timeout=PROCESS_TIMEOUT, check=True)
             else:
                 result = subprocess.run(
                     command, cwd=directory, env=env, stdin=subprocess.DEVNULL,
@@ -342,10 +375,17 @@ def capture_client(binary, mode, directory):
     return capture
 
 
-def collect(version, platform_name, supplied_binary=None):
+def collect(version, platform_name, supplied_binary=None, terminal_releases=None):
     actual = native_platform()
     if platform_name != actual:
         raise RuntimeError(f"requested {platform_name}, but this process runs on {actual}")
+    selected = None
+    if terminal_releases is not None:
+        try:
+            from .terminals import collect_profiles, parse_releases
+        except ImportError:
+            from terminals import collect_profiles, parse_releases
+        selected = parse_releases(terminal_releases)
     url = source_url(version, platform_name)
     with tempfile.TemporaryDirectory(prefix="codex-ua-") as temporary:
         directory = Path(temporary)
@@ -362,8 +402,11 @@ def collect(version, platform_name, supplied_binary=None):
             mode: capture_client(binary, mode, directory / mode.lower())
             for mode in ("CLI", "Exec")
         }
-    return {
-        "schema_version": 2,
+        profiles = None
+        if selected is not None:
+            profiles = collect_profiles(binary, platform_name, selected, directory)
+    result = {
+        "schema_version": 3 if profiles is not None else 2,
         "codex_version": version,
         "platform": platform_name,
         "target": TARGETS[platform_name],
@@ -389,6 +432,9 @@ def collect(version, platform_name, supplied_binary=None):
             for mode, capture in captures.items()
         },
     }
+    if profiles is not None:
+        result.update({"terminal_releases": {name: release.to_dict() for name, release in selected.items()}, "profiles": profiles})
+    return result
 
 
 def main():
@@ -397,8 +443,10 @@ def main():
     parser.add_argument("--platform", required=True, choices=TARGETS)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--binary", type=Path, help="use an existing binary for local smoke testing")
+    parser.add_argument("--terminal-releases", type=Path, help="fixed official stable terminal release snapshot")
     args = parser.parse_args()
-    observation = collect(args.version, args.platform, args.binary)
+    selected = json.loads(args.terminal_releases.read_text(encoding="utf-8")) if args.terminal_releases else None
+    observation = collect(args.version, args.platform, args.binary, selected)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(observation, indent=2) + "\n", encoding="utf-8")
     print(f"Collected Codex {args.version} on {args.platform}: {args.output}")

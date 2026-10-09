@@ -10,7 +10,10 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1,
+      "enum": [
+        1,
+        2
+      ],
       "type": "integer"
     },
     "codex_version": {
@@ -96,9 +99,245 @@
         },
         "Exec": {
           "$ref": "#/$defs/execUserAgent"
+        },
+        "profiles": {
+          "type": "object",
+          "required": [
+            "WindowsTerminal",
+            "vscode",
+            "herdr"
+          ],
+          "properties": {
+            "WindowsTerminal": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/nativeClients"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "vscode": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/nativeClients"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "herdr": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/nativeClients"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "cliNativeUserAgent": {
+      "type": "string",
+      "pattern": "^codex-tui/(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*) \\([^;()\\u0000-\\u001f\\u007f]+; [^;()\\u0000-\\u001f\\u007f]+\\) [^()\\u0000-\\u001f\\u007f]+ \\(codex-tui; (?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\)$"
+    },
+    "execNativeUserAgent": {
+      "type": "string",
+      "pattern": "^codex_exec/(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*) \\([^;()\\u0000-\\u001f\\u007f]+; [^;()\\u0000-\\u001f\\u007f]+\\) [^()\\u0000-\\u001f\\u007f]+ \\(codex_exec; (?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\)$"
+    },
+    "nativeClients": {
+      "type": "object",
+      "required": [
+        "CLI",
+        "Exec"
+      ],
+      "properties": {
+        "CLI": {
+          "$ref": "#/$defs/cliNativeUserAgent"
+        },
+        "Exec": {
+          "$ref": "#/$defs/execNativeUserAgent"
         }
       },
       "additionalProperties": false
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "platforms": {
+            "properties": {
+              "linux-ubuntu-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-ubuntu-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-debian-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-debian-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-fedora-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-fedora-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-alpine-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-alpine-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "macos-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "macos-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "windows-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "windows-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "platforms": {
+            "properties": {
+              "linux-ubuntu-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-ubuntu-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-debian-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-debian-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-fedora-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-fedora-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-alpine-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-alpine-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "macos-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "macos-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "windows-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "windows-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

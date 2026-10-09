@@ -6,6 +6,10 @@ CLI and Exec client profiles for one stable Codex version. These are
 samples of the recorded runtime environments, not an exhaustive list of possible
 Codex User-Agents.
 
+The twelve platforms retain the `xterm-256color` baseline. Additional terminal
+Profiles are `WindowsTerminal`, `vscode`, and `herdr`, using the latest official
+stable releases available when the collection starts, on their native targets.
+
 For Desktop backend User-Agents, see
 [codex-desktop-ua](https://github.com/huweiATgithub/codex-desktop-ua).
 
@@ -31,7 +35,7 @@ workflow, schemas, tests, and documentation.
 ## JSON format
 
 Each release provides two JSON files with independently versioned schemas.
-The compact matrix uses `schema_version: 1`; run details use `schema_version: 2`.
+The compact matrix uses `schema_version: 2`; run details use `schema_version: 3`.
 Both identify the collected `codex_version`.
 
 `ua-matrix.json` follows the [matrix schema](schema/ua-matrix.schema.json).
@@ -39,12 +43,15 @@ Its top-level fields are `schema_version`, `codex_version`, and `platforms`.
 
 `platforms` has twelve keys: each of `linux-ubuntu`, `linux-debian`, `linux-fedora`,
 `linux-alpine`, `macos`, and `windows` paired with `-x64` and `-arm64`.
-Each entry maps `CLI` and `Exec` directly to UA strings. Read a UA using,
+Each entry maps the baseline `CLI` and `Exec` directly to UA strings. Its `profiles`
+maps `WindowsTerminal`, `vscode`, and `herdr` to additional `CLI`/`Exec` strings,
+or `null` for unsupported combinations. Read a UA using,
 for example:
 
 ```text
 platforms["linux-debian-x64"]["CLI"]
 platforms["windows-arm64"]["Exec"]
+platforms["linux-ubuntu-x64"]["profiles"]["vscode"]["CLI"]
 ```
 
 `ua-matrix.run.json` follows the [run schema](schema/ua-matrix.run.schema.json)
@@ -53,6 +60,11 @@ provenance, including the source commit and workflow run URL. Each platform reco
 its binary URL, collection time, OS and runner metadata, terminal environment,
 and `clients`. Each client has a `user_agent`, collection `method: "http-capture"`,
 and `http_capture` with the UA and originator sent to the loopback server.
+`terminal_releases` records the shared stable release snapshot. Each platform's
+`profiles` records either `status: "unsupported"` with its reason, or
+`status: "collected"` with the native application version and download URL,
+launch method, terminal environment, PTY evidence, and both captured clients.
+Earlier compact schema 1 and run schema 2 contain only the baseline.
 Older run details with `schema_version: 1` used app-server initialization;
 only Exec included an HTTP capture in that format.
 
@@ -78,7 +90,7 @@ the distribution's userspace and share the host kernel, so Linux `os.release`
 and `os.version` describe the host kernel. The collector checks the distribution
 identity as well as the native architecture before running the binary.
 
-Each probe runs in a fresh process with an empty temporary Codex home and a
+Each baseline probe runs in a fresh process with an empty temporary Codex home and a
 controlled terminal environment, `TERM=xterm-256color`. CLI starts the real
 interactive `codex` TUI in a native pseudo-terminal: a Unix PTY on Linux/macOS or
 ConPTY on Windows. Exec starts `codex exec`. Each receives an initial prompt and
@@ -86,6 +98,19 @@ sends a request to a loopback Responses server, which returns a canned response.
 The collector records each request's User-Agent and originator verbatim; the
 clients set their own names and versions. No OpenAI credentials or model calls
 are needed.
+
+Additional Profiles launch the downloaded native terminal application first:
+Windows Terminal in portable mode, VS Code with an integrated terminal, or a
+named Herdr server with its native PTY. A sampler inside that terminal starts
+`codex` and `codex exec`, preserving the application's complete environment and
+standard input/output. The application responds to terminal queries itself;
+the sampler does not create a substitute PTY or set terminal identity variables.
+Only the actual requests' User-Agent and originator headers are recorded.
+
+Windows Terminal runs only on Windows. The VS Code desktop is unsupported in
+the distribution containers and on Windows Server; Herdr requires an official
+native binary for the selected architecture. Unsupported combinations are
+explicit, and a supported launch or capture failure prevents publication.
 
 The collector closes the TUI after its Responses request completes. OS versions
 and terminal environments can change the UA independently of the Codex version;
@@ -95,7 +120,9 @@ the matrix describes its collection environment.
 
 One published release, tagged `v<codex-version>`, contains `ua-matrix.json` and
 `ua-matrix.run.json`. The tag points to the collector commit. All twelve platforms
-and both client modes must succeed, and both assets must be uploaded and verified,
+and both baseline client modes must succeed. Every supported terminal Profile
+must also capture both clients; other combinations must record their native
+support reason. Both assets must be uploaded and verified,
 before the workflow publishes. Published versions are skipped; there is no
 periodic recollection of an unchanged Codex version.
 
@@ -130,6 +157,8 @@ Application scripts use Python 3.11 or newer and the standard library, with
 `pywinpty` additionally required for Windows ConPTY support. Discovery and
 publication use an authenticated GitHub CLI (`gh`). Tests use `jsonschema` to
 check the published format; development requirements include runtime dependencies.
+Linux VS Code collection additionally requires Xvfb, xauth, and the native GUI
+libraries; the workflow installs these on its Ubuntu hosts.
 
 ```sh
 python -m pip install -r requirements-dev.txt
@@ -141,10 +170,13 @@ Run a native collection locally, choosing the platform that matches the machine:
 
 ```sh
 python -m pip install -r requirements.txt
-python scripts/collect.py --version 0.156.1 --platform linux-ubuntu-x64 --output .local/linux-ubuntu-x64.json
+python scripts/terminals.py resolve --output .local/terminal-releases.json
+python scripts/collect.py --version 0.156.1 --platform linux-ubuntu-x64 --terminal-releases .local/terminal-releases.json --output .local/linux-ubuntu-x64.json
 ```
 
 For a local smoke test, `--binary /absolute/path/to/codex` uses an already-installed
 binary instead of downloading it. This is not evidence of a fresh official-asset
 download. Local output, the reference source checkout, and Python caches are
 ignored by Git.
+Omitting `--terminal-releases` runs a baseline-only smoke test. Workflow matrix
+assembly requires the complete terminal Profile coverage before publication.

@@ -12,7 +12,10 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 2,
+      "enum": [
+        2,
+        3
+      ],
       "type": "integer"
     },
     "codex_version": {
@@ -460,6 +463,151 @@
         }
       },
       "additionalProperties": false
+    },
+    "terminal_releases": {
+      "type": "object",
+      "required": [
+        "WindowsTerminal",
+        "vscode",
+        "herdr"
+      ],
+      "properties": {
+        "WindowsTerminal": {
+          "type": "object",
+          "required": [
+            "version",
+            "source_url",
+            "assets"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+){3}$"
+            },
+            "source_url": {
+              "type": "string",
+              "pattern": "^https://github\\.com/microsoft/terminal/releases/"
+            },
+            "assets": {
+              "type": "object",
+              "minProperties": 1,
+              "properties": {
+                "windows-x64": {
+                  "type": "string",
+                  "pattern": "^https://github\\.com/microsoft/terminal/releases/download/"
+                },
+                "windows-arm64": {
+                  "type": "string",
+                  "pattern": "^https://github\\.com/microsoft/terminal/releases/download/"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "vscode": {
+          "type": "object",
+          "required": [
+            "version",
+            "source_url",
+            "assets"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+            },
+            "source_url": {
+              "type": "string",
+              "pattern": "^https://code\\.visualstudio\\.com/updates/"
+            },
+            "assets": {
+              "type": "object",
+              "minProperties": 1,
+              "properties": {
+                "linux-x64": {
+                  "type": "string",
+                  "pattern": "^https://update\\.code\\.visualstudio\\.com/"
+                },
+                "linux-arm64": {
+                  "type": "string",
+                  "pattern": "^https://update\\.code\\.visualstudio\\.com/"
+                },
+                "macos-x64": {
+                  "type": "string",
+                  "pattern": "^https://update\\.code\\.visualstudio\\.com/"
+                },
+                "macos-arm64": {
+                  "type": "string",
+                  "pattern": "^https://update\\.code\\.visualstudio\\.com/"
+                },
+                "windows-x64": {
+                  "type": "string",
+                  "pattern": "^https://update\\.code\\.visualstudio\\.com/"
+                },
+                "windows-arm64": {
+                  "type": "string",
+                  "pattern": "^https://update\\.code\\.visualstudio\\.com/"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "herdr": {
+          "type": "object",
+          "required": [
+            "version",
+            "source_url",
+            "assets"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+            },
+            "source_url": {
+              "type": "string",
+              "pattern": "^https://github\\.com/herdrdev/herdr/releases/"
+            },
+            "assets": {
+              "type": "object",
+              "minProperties": 1,
+              "properties": {
+                "linux-x64": {
+                  "type": "string",
+                  "pattern": "^https://github\\.com/herdrdev/herdr/releases/download/"
+                },
+                "linux-arm64": {
+                  "type": "string",
+                  "pattern": "^https://github\\.com/herdrdev/herdr/releases/download/"
+                },
+                "macos-x64": {
+                  "type": "string",
+                  "pattern": "^https://github\\.com/herdrdev/herdr/releases/download/"
+                },
+                "macos-arm64": {
+                  "type": "string",
+                  "pattern": "^https://github\\.com/herdrdev/herdr/releases/download/"
+                },
+                "windows-x64": {
+                  "type": "string",
+                  "pattern": "^https://github\\.com/herdrdev/herdr/releases/download/"
+                },
+                "windows-arm64": {
+                  "type": "string",
+                  "pattern": "^https://github\\.com/herdrdev/herdr/releases/download/"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
@@ -652,6 +800,101 @@
             }
           },
           "additionalProperties": false
+        },
+        "profiles": {
+          "type": "object",
+          "required": [
+            "WindowsTerminal",
+            "vscode",
+            "herdr"
+          ],
+          "properties": {
+            "WindowsTerminal": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/unsupportedProfile"
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/collectedProfile"
+                    },
+                    {
+                      "properties": {
+                        "launch_method": {
+                          "const": "windows-terminal"
+                        },
+                        "application": {
+                          "properties": {
+                            "version": {
+                              "pattern": "^[0-9]+(?:\\.[0-9]+){3}$"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "vscode": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/unsupportedProfile"
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/collectedProfile"
+                    },
+                    {
+                      "properties": {
+                        "launch_method": {
+                          "const": "vscode-integrated-terminal"
+                        },
+                        "application": {
+                          "properties": {
+                            "version": {
+                              "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "herdr": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/unsupportedProfile"
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/collectedProfile"
+                    },
+                    {
+                      "properties": {
+                        "launch_method": {
+                          "const": "herdr-pty"
+                        },
+                        "application": {
+                          "properties": {
+                            "version": {
+                              "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -675,6 +918,350 @@
         }
       },
       "additionalProperties": false
+    },
+    "cliNativeUserAgent": {
+      "type": "string",
+      "pattern": "^codex-tui/(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*) \\([^;()\\u0000-\\u001f\\u007f]+; [^;()\\u0000-\\u001f\\u007f]+\\) [^()\\u0000-\\u001f\\u007f]+ \\(codex-tui; (?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\)$"
+    },
+    "execNativeUserAgent": {
+      "type": "string",
+      "pattern": "^codex_exec/(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*) \\([^;()\\u0000-\\u001f\\u007f]+; [^;()\\u0000-\\u001f\\u007f]+\\) [^()\\u0000-\\u001f\\u007f]+ \\(codex_exec; (?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\)$"
+    },
+    "nativeClients": {
+      "type": "object",
+      "required": [
+        "CLI",
+        "Exec"
+      ],
+      "properties": {
+        "CLI": {
+          "type": "object",
+          "required": [
+            "user_agent",
+            "method",
+            "http_capture"
+          ],
+          "properties": {
+            "user_agent": {
+              "$ref": "#/$defs/cliNativeUserAgent"
+            },
+            "method": {
+              "const": "http-capture"
+            },
+            "http_capture": {
+              "type": "object",
+              "required": [
+                "user_agent",
+                "originator"
+              ],
+              "properties": {
+                "user_agent": {
+                  "$ref": "#/$defs/cliNativeUserAgent"
+                },
+                "originator": {
+                  "const": "codex-tui"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "Exec": {
+          "type": "object",
+          "required": [
+            "user_agent",
+            "method",
+            "http_capture"
+          ],
+          "properties": {
+            "user_agent": {
+              "$ref": "#/$defs/execNativeUserAgent"
+            },
+            "method": {
+              "const": "http-capture"
+            },
+            "http_capture": {
+              "type": "object",
+              "required": [
+                "user_agent",
+                "originator"
+              ],
+              "properties": {
+                "user_agent": {
+                  "$ref": "#/$defs/execNativeUserAgent"
+                },
+                "originator": {
+                  "const": "codex_exec"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "unsupportedProfile": {
+      "type": "object",
+      "required": [
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "const": "unsupported"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonemptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "collectedProfile": {
+      "type": "object",
+      "required": [
+        "status",
+        "application",
+        "launch_method",
+        "terminal",
+        "tty",
+        "clients"
+      ],
+      "properties": {
+        "status": {
+          "const": "collected"
+        },
+        "application": {
+          "type": "object",
+          "required": [
+            "version",
+            "source_url"
+          ],
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "source_url": {
+              "type": "string",
+              "pattern": "^https://"
+            }
+          },
+          "additionalProperties": false
+        },
+        "launch_method": {
+          "enum": [
+            "windows-terminal",
+            "vscode-integrated-terminal",
+            "herdr-pty"
+          ]
+        },
+        "terminal": {
+          "type": "object",
+          "minProperties": 1,
+          "patternProperties": {
+            "^(?:TERM.*|WT_.*|HERDR_.*)$": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "tty": {
+          "const": [
+            true,
+            true,
+            true
+          ],
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "clients": {
+          "$ref": "#/$defs/nativeClients"
+        }
+      },
+      "additionalProperties": false
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": 3
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "platforms": {
+            "properties": {
+              "linux-ubuntu-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-ubuntu-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-debian-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-debian-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-fedora-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-fedora-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-alpine-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "linux-alpine-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "macos-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "macos-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "windows-x64": {
+                "required": [
+                  "profiles"
+                ]
+              },
+              "windows-arm64": {
+                "required": [
+                  "profiles"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "terminal_releases"
+        ]
+      },
+      "else": {
+        "properties": {
+          "platforms": {
+            "properties": {
+              "linux-ubuntu-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-ubuntu-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-debian-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-debian-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-fedora-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-fedora-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-alpine-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "linux-alpine-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "macos-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "macos-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "windows-x64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              },
+              "windows-arm64": {
+                "not": {
+                  "required": [
+                    "profiles"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "terminal_releases"
+          ]
+        }
+      }
+    }
+  ]
 }

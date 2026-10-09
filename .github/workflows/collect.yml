@@ -42,6 +42,19 @@ jobs:
           python scripts/releases.py discover
           --repository "$GITHUB_REPOSITORY"
           --version "$REQUESTED_VERSION"
+      - name: Resolve stable terminal releases
+        if: steps.discover.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/terminals.py resolve --output .local/terminal-releases.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.discover.outputs.needed == 'true'
+        with:
+          name: terminal-releases
+          path: .local/terminal-releases.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
 
   collect:
     needs: discover
@@ -84,6 +97,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: terminal-releases
+          path: .local
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         if: ${{ !matrix.container_image }}
         with:
@@ -91,6 +108,11 @@ jobs:
       - name: Install Windows terminal support
         if: startsWith(matrix.platform, 'windows-')
         run: python -m pip install -r requirements.txt
+      - name: Install Linux desktop terminal dependencies
+        if: startsWith(matrix.platform, 'linux-') && !matrix.container_image
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libgtk-3-0t64 libnss3 libasound2t64 libgbm1
       - name: Collect native client UAs
         if: ${{ !matrix.container_image }}
         env:
@@ -101,6 +123,7 @@ jobs:
           python scripts/collect.py
           --version "$CODEX_VERSION"
           --platform "$COLLECT_PLATFORM"
+          --terminal-releases .local/terminal-releases.json
           --output ".local/$COLLECT_PLATFORM.json"
       - name: Collect Linux distribution UAs
         if: ${{ matrix.container_image }}
@@ -125,6 +148,7 @@ jobs:
               python3 scripts/collect.py \
                 --version "$CODEX_VERSION" \
                 --platform "$COLLECT_PLATFORM" \
+                --terminal-releases /workspace/.local/terminal-releases.json \
                 --output "/output/$COLLECT_PLATFORM.json"
             '
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -163,6 +187,7 @@ jobs:
           --output-dir .local
           --collector-commit "$GITHUB_SHA"
           --run-url "$RUN_URL"
+          --require-profiles
       - name: Publish the versioned release assets
         env:
           GH_TOKEN: ${{ github.token }}

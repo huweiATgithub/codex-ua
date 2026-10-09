@@ -63,6 +63,22 @@ class CollectorTests(unittest.TestCase):
             for name in inherited.keys() - {"PATH", "SystemRoot", "HOME", "CODEX_HOME"}:
                 self.assertNotIn(name, env)
 
+    def test_native_environment_preserves_all_application_signals(self):
+        inherited = {"PATH": "/usr/bin", "HOME": "/isolated/application/home", "TERM": "application-capabilities",
+                     "TERM_PROGRAM": "native-application", "TERM_PROGRAM_VERSION": "1.0.0",
+                     "FUTURE_TERMINAL_SIGNAL": "native-value", "HERDR_SOCKET_PATH": "/isolated/session/socket"}
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, inherited, clear=True):
+            env = child_environment(Path(temporary), native_terminal=True)
+            for name, value in inherited.items():
+                self.assertEqual(env[name], value)
+            self.assertEqual(Path(env["CODEX_HOME"]), Path(temporary) / "codex-home")
+
+    def test_native_capture_rejects_nonterminal_before_launch(self):
+        with patch("scripts.collect.os.isatty", return_value=False), patch("scripts.collect.subprocess.run") as run:
+            with self.assertRaisesRegex(RuntimeError, "application's real PTY"):
+                capture_client(Path("codex"), "CLI", Path("unused"), native_terminal=True)
+            run.assert_not_called()
+
     def fake_client(self, directory, headers=None):
         binary = directory / "codex"
         fixture = Path(__file__).parent / "fixtures" / "codex_client.py"

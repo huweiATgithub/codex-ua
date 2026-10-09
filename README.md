@@ -31,7 +31,8 @@ workflow, schemas, tests, and documentation.
 ## JSON format
 
 Each release provides two JSON files with independently versioned schemas.
-Both currently use `schema_version: 1` and identify the collected `codex_version`.
+The compact matrix uses `schema_version: 1`; run details use `schema_version: 2`.
+Both identify the collected `codex_version`.
 
 `ua-matrix.json` follows the [matrix schema](schema/ua-matrix.schema.json).
 Its top-level fields are `schema_version`, `codex_version`, and `platforms`.
@@ -50,8 +51,10 @@ platforms["windows-arm64"]["Exec"]
 and describes one collection run. It adds `upstream_release` and `collector`
 provenance, including the source commit and workflow run URL. Each platform records
 its binary URL, collection time, OS and runner metadata, terminal environment,
-and `clients`. Each client has a `user_agent` and collection `method`; exec also
-includes `http_capture` with the UA and originator sent to the loopback server.
+and `clients`. Each client has a `user_agent`, collection `method: "http-capture"`,
+and `http_capture` with the UA and originator sent to the loopback server.
+Older run details with `schema_version: 1` used app-server initialization;
+only Exec included an HTTP capture in that format.
 
 On Linux, `os.distribution` records the `id`, `version_id`, and `pretty_name`
 from the runtime's `/etc/os-release`; it is `null` on other systems.
@@ -64,10 +67,9 @@ strings are identical in both files. Preserve them verbatim when consuming them.
 ## Collection method
 
 The collector downloads the exact binary from `openai/codex`'s `rust-v<version>`
-release and checks its reported version and native runtime architecture. Discovery
-checks the tagged source for the supported interactive and exec initialization
-profiles; unfamiliar upstream initialization behavior fails collection rather than
-silently labeling an arbitrary app-server identity as an official CLI profile.
+release and checks its reported version and native runtime architecture. Both
+client modes must send a Responses request with their expected originator and
+User-Agent identity before their observations can be published.
 
 Ubuntu, macOS, and Windows are collected directly on GitHub-hosted runners.
 Debian 13, Fedora 44, and Alpine 3.24 use their official container images on
@@ -77,16 +79,17 @@ and `os.version` describe the host kernel. The collector checks the distribution
 identity as well as the native architecture before running the binary.
 
 Each probe runs in a fresh process with an empty temporary Codex home and a
-controlled terminal environment, `TERM=xterm-256color`. App-server initialization
-returns the composed UA for `codex-tui` and `codex_exec`. A separate `codex exec`
-invocation sends a request to a loopback Responses server, which returns a canned
-response. Its headers must match the composed exec UA. No OpenAI credentials or
-model calls are needed.
+controlled terminal environment, `TERM=xterm-256color`. CLI starts the real
+interactive `codex` TUI in a native pseudo-terminal: a Unix PTY on Linux/macOS or
+ConPTY on Windows. Exec starts `codex exec`. Each receives an initial prompt and
+sends a request to a loopback Responses server, which returns a canned response.
+The collector records each request's User-Agent and originator verbatim; the
+clients set their own names and versions. No OpenAI credentials or model calls
+are needed.
 
-The CLI entry is a backend-composed profile, not an HTTP capture from an
-interactive terminal session. OS versions and terminal environments can change
-the UA independently of the Codex version; the matrix describes its collection
-environment.
+The collector closes the TUI after its Responses request completes. OS versions
+and terminal environments can change the UA independently of the Codex version;
+the matrix describes its collection environment.
 
 ## Release policy and scheduling
 
@@ -123,9 +126,10 @@ point for unattended operation. See [GitHub's schedule rules](https://docs.githu
 
 ## Local verification
 
-Application scripts use Python 3.11 or newer and the standard library; discovery
-and publication additionally use an authenticated GitHub CLI (`gh`). Tests use
-`jsonschema` to check the published format.
+Application scripts use Python 3.11 or newer and the standard library, with
+`pywinpty` additionally required for Windows ConPTY support. Discovery and
+publication use an authenticated GitHub CLI (`gh`). Tests use `jsonschema` to
+check the published format; development requirements include runtime dependencies.
 
 ```sh
 python -m pip install -r requirements-dev.txt
@@ -136,6 +140,7 @@ python -m compileall -q scripts tests
 Run a native collection locally, choosing the platform that matches the machine:
 
 ```sh
+python -m pip install -r requirements.txt
 python scripts/collect.py --version 0.156.1 --platform linux-ubuntu-x64 --output .local/linux-ubuntu-x64.json
 ```
 

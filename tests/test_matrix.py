@@ -36,11 +36,12 @@ def platform_record(platform):
     clients = {}
     for mode, identity in (("CLI", "codex-tui"), ("Exec", "codex_exec")):
         ua = f"{identity}/{VERSION} ({system} 1.0; {machine}) xterm-256color ({identity}; {VERSION})"
-        clients[mode] = {"user_agent": ua, "method": "app-server-initialize"}
-        if mode == "Exec":
-            clients[mode]["http_capture"] = {"user_agent": ua, "originator": "codex_exec"}
+        clients[mode] = {
+            "user_agent": ua, "method": "http-capture",
+            "http_capture": {"user_agent": ua, "originator": identity},
+        }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "codex_version": VERSION,
         "platform": platform,
         "target": target,
@@ -122,13 +123,26 @@ class MatrixTests(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaisesRegex(MatrixError, key):
                 self.assemble()
 
-    def test_exec_capture_must_match_initialization(self):
-        for key, value in (("user_agent", "different/0.155.1"), ("originator", "codex-tui")):
-            record = platform_record("linux-ubuntu-x64")
-            record["clients"]["Exec"]["http_capture"][key] = value
-            self.write(record)
-            with self.subTest(key=key), self.assertRaisesRegex(MatrixError, f"http_capture.{key}"):
-                self.assemble()
+    def test_both_clients_require_matching_captured_headers(self):
+        for mode in ("CLI", "Exec"):
+            for key, value in (("user_agent", "different/0.155.1"), ("originator", "another-client")):
+                record = platform_record("linux-ubuntu-x64")
+                record["clients"][mode]["http_capture"][key] = value
+                self.write(record)
+                with self.subTest(mode=mode, key=key), self.assertRaisesRegex(MatrixError, f"http_capture.{key}"):
+                    self.assemble()
+
+    def test_composed_profiles_cannot_be_published_as_captures(self):
+        for mode in ("CLI", "Exec"):
+            for legacy in ("method", "http_capture"):
+                record = platform_record("linux-ubuntu-x64")
+                if legacy == "method":
+                    record["clients"][mode]["method"] = "app-server-initialize"
+                else:
+                    del record["clients"][mode]["http_capture"]
+                self.write(record)
+                with self.subTest(mode=mode, legacy=legacy), self.assertRaisesRegex(MatrixError, legacy):
+                    self.assemble()
 
     def test_client_identity_version_and_terminal_are_required(self):
         original = platform_record("linux-ubuntu-x64")

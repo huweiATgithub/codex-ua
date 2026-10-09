@@ -1,13 +1,12 @@
-import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from scripts import collect, matrix
-from scripts.collect import child_environment, initialize_user_agent, native_platform
+from scripts.collect import capture_client, child_environment, native_platform
 
 
 class CollectorTests(unittest.TestCase):
@@ -64,31 +63,60 @@ class CollectorTests(unittest.TestCase):
             for name in inherited.keys() - {"PATH", "SystemRoot", "HOME", "CODEX_HOME"}:
                 self.assertNotIn(name, env)
 
-    def test_initialize_ignores_notifications_and_unrelated_response_ids(self):
-        messages = [
-            {"method": "notice", "params": {}},
-            {"id": 42, "result": {"userAgent": "wrong-response"}},
-            {"id": 1, "result": {"userAgent": "exact measured value"}},
-        ]
-        process = Mock()
-        process.stdout = io.StringIO("\n".join(json.dumps(message) for message in messages) + "\n")
-        process.stdin = Mock(closed=False)
-        process.poll.return_value = 0
-        with tempfile.TemporaryDirectory() as temporary, patch("scripts.collect.subprocess.Popen", return_value=process):
-            actual = initialize_user_agent(Path("codex"), "0.156.1", "codex-tui", Path(temporary) / "probe")
-        self.assertEqual(actual, "exact measured value")
-        sent = [json.loads(call.args[0]) for call in process.stdin.write.call_args_list]
-        self.assertEqual(sent[0]["params"]["clientInfo"], {"name": "codex-tui", "version": "0.156.1"})
-        self.assertEqual(sent[-1], {"method": "initialized"})
+    def fake_client(self, directory, headers=None):
+        binary = directory / "codex"
+        fixture = Path(__file__).parent / "fixtures" / "codex_client.py"
+        binary.write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+        binary.chmod(0o755)
+        if headers is not None:
+            (directory / "headers.json").write_text(json.dumps(headers), encoding="utf-8")
+        return binary
 
-    def test_initialize_error_is_not_published_as_an_observation(self):
-        process = Mock()
-        process.stdout = io.StringIO('{"id":1,"error":{"code":-32602,"message":"unsupported client"}}\n')
-        process.stdin = Mock(closed=False)
-        process.poll.return_value = 0
-        with tempfile.TemporaryDirectory() as temporary, patch("scripts.collect.subprocess.Popen", return_value=process):
-            with self.assertRaisesRegex(RuntimeError, "unsupported client"):
-                initialize_user_agent(Path("codex"), "0.156.1", "codex-tui", Path(temporary) / "probe")
+    @unittest.skipUnless(os.name == "posix", "uses a native Unix test client")
+    def test_native_clients_capture_headers_without_supplied_identities(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result = collect.collect("0.156.1", native_platform(), self.fake_client(directory))
+        self.assertEqual(result["schema_version"], 2)
+        for mode, identity in (("CLI", "codex-tui"), ("Exec", "codex_exec")):
+            ua = f"{identity}/0.156.1 (Measured OS 7; x86_64) xterm-256color ({identity}; 0.156.1)"
+            self.assertEqual(result["clients"][mode], {
+                "user_agent": ua, "method": "http-capture",
+                "http_capture": {"user_agent": ua, "originator": identity},
+            })
+
+    @unittest.skipUnless(os.name == "posix", "uses a native Unix test client")
+    def test_tui_process_is_reaped_after_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            capture_client(self.fake_client(directory), "CLI", directory / "tui")
+            pid = int((directory / "tui" / "pid").read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    @unittest.skipUnless(os.name == "posix", "uses a native Unix test client")
+    def test_tui_timeout_reaps_process_and_rejects_missing_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            binary = self.fake_client(directory)
+            (directory / "hold-request").touch()
+            with patch("scripts.collect.PROCESS_TIMEOUT", 2):
+                with self.assertRaisesRegex(RuntimeError, "TUI timed out"):
+                    capture_client(binary, "CLI", directory / "tui")
+            pid = int((directory / "tui" / "pid").read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    @unittest.skipUnless(os.name == "posix", "uses a native Unix test client")
+    def test_missing_user_agent_and_wrong_originator_are_rejected(self):
+        for headers, message in (
+            ({"User-Agent": "", "originator": "codex_exec"}, "no User-Agent"),
+            ({"User-Agent": "measured UA", "originator": "another-client"}, "unexpected Exec originator"),
+        ):
+            with self.subTest(headers=headers), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    capture_client(self.fake_client(directory, headers), "Exec", directory / "capture")
 
 
 if __name__ == "__main__":

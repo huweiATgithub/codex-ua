@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -130,28 +129,6 @@ def missing_binary_assets(release: dict) -> list[str]:
     return sorted(expected - available)
 
 
-def verify_client_profiles(github: GitHub, version: StableVersion) -> None:
-    # initialize accepts arbitrary client identities; verify the real CLI callers
-    # at the selected release before treating the composed profiles as CLI UAs.
-    for crate, name in (("tui", "codex-tui"), ("exec", "codex_exec")):
-        path = f"codex-rs/{crate}/src/lib.rs"
-        value = github.api(f"repos/{UPSTREAM}/contents/{path}?ref=rust-v{version.value}")
-        if value.get("encoding") != "base64" or not value.get("content"):
-            raise ReleaseError(f"Cannot read {path} at rust-v{version.value}")
-        source = base64.b64decode(value["content"]).decode("utf-8")
-        pattern = (
-            r"InProcessClientStartArgs\s*\{"
-            r"(?:(?!\bclient_name\s*:).)*?"
-            rf'\bclient_name\s*:\s*"{re.escape(name)}"\.to_string\(\)\s*,\s*'
-            r'client_version\s*:\s*env!\(\s*"CARGO_PKG_VERSION"\s*\)\.to_string\(\)\s*,'
-        )
-        if not re.search(pattern, source, re.DOTALL):
-            raise ReleaseError(
-                f"CLI profile changed or is unsupported in {path} at rust-v{version.value}; "
-                "review the upstream initialization before collecting this version."
-            )
-
-
 def discover(github: GitHub, repository: str, requested: str | None = None) -> dict:
     requested = requested or None
     version = StableVersion.parse(requested) if requested is not None else None
@@ -192,7 +169,6 @@ def discover(github: GitHub, repository: str, requested: str | None = None) -> d
         if requested:
             raise ReleaseError(reason)
         return {"needed": False, "version": "", "reason": reason}
-    verify_client_profiles(github, version)
     return {"needed": True, "version": version.value, "reason": "Stable release has no published matrix"}
 
 

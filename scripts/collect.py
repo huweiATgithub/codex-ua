@@ -2,7 +2,9 @@
 """Collect CLI User-Agents from one native official Codex release binary."""
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -107,15 +109,16 @@ def child_environment(directory):
         "TMP": str(temporary),
         **TERMINAL,
     })
-    # Both app-server and exec read these settings. No model turn is needed for
-    # initialization, and exec receives its loopback-only provider separately.
+    # Both clients receive a loopback-only provider separately.
     (codex_home / "config.toml").write_text(
         "check_for_update_on_startup = false\n"
         "cli_auth_credentials_store = 'file'\n"
         "web_search = 'disabled'\n"
         "[analytics]\nenabled = false\n"
         "[feedback]\nenabled = false\n"
-        "[otel]\nexporter = 'none'\ntrace_exporter = 'none'\nmetrics_exporter = 'none'\n",
+        "[otel]\nexporter = 'none'\ntrace_exporter = 'none'\nmetrics_exporter = 'none'\n"
+        # Older TUIs read directory trust from the home config, not CLI overrides.
+        f"[projects.{json.dumps(str(directory.resolve()))}]\ntrust_level = 'trusted'\n",
         encoding="utf-8",
     )
     return env
@@ -131,67 +134,105 @@ def stop_process(process):
             process.wait(timeout=5)
 
 
-def initialize_user_agent(binary, version, client_name, directory):
-    directory.mkdir()
-    env = child_environment(directory)
-    request = {"id": 1, "method": "initialize", "params": {"clientInfo": {"name": client_name, "version": version}}}
-    lines = queue.Queue()
-    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr:
-        process = subprocess.Popen(
-            [str(binary), "app-server", "--listen", "stdio://"],
-            cwd=directory, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=stderr, text=True, encoding="utf-8", errors="replace",
+@contextmanager
+def tui_terminal(command, directory, env):
+    if os.name == "nt":
+        from winpty import PtyProcess
+        from winpty.enums import Backend
+
+        # A string keeps ConPTY's zero enum value from selecting an env override.
+        process = PtyProcess.spawn(
+            command, cwd=str(directory), env=env, dimensions=(40, 120),
+            backend=str(Backend.ConPTY),
         )
-
-        def read_stdout():
-            try:
-                for line in process.stdout:
-                    lines.put(line)
-            finally:
-                lines.put(None)
-
-        reader = threading.Thread(target=read_stdout, daemon=True)
-        reader.start()
         try:
-            process.stdin.write(json.dumps(request) + "\n")
-            process.stdin.flush()
-            deadline = time.monotonic() + PROCESS_TIMEOUT
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise RuntimeError("app-server initialization timed out")
-                try:
-                    line = lines.get(timeout=remaining)
-                except queue.Empty as error:
-                    raise RuntimeError("app-server initialization timed out") from error
-                if line is None:
-                    raise RuntimeError("app-server exited before initialization responded")
-                response = json.loads(line)
-                if not isinstance(response, dict) or response.get("id") != 1:
-                    continue
-                if "error" in response:
-                    raise RuntimeError(f"app-server initialization failed: {response['error']}")
-                user_agent = response.get("result", {}).get("userAgent")
-                if not isinstance(user_agent, str) or not user_agent:
-                    raise RuntimeError("app-server returned no User-Agent")
-                process.stdin.write(json.dumps({"method": "initialized"}) + "\n")
-                process.stdin.flush()
-                process.stdin.close()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    stop_process(process)
-                return user_agent
-        except Exception as error:
-            stop_process(process)
-            stderr.seek(0)
-            raise RuntimeError(f"{client_name}: {error}\n{stderr.read()[-8000:]}") from error
+            yield process.read, process.write
         finally:
-            stop_process(process)
+            process.close(force=True)
+    else:
+        import pty
+        import termios
+
+        master, slave = pty.openpty()
+        process = None
+        try:
+            termios.tcsetwinsize(slave, (40, 120))
+            process = subprocess.Popen(
+                command, cwd=directory, env=env, stdin=slave, stdout=slave,
+                stderr=slave, start_new_session=True,
+            )
+            os.close(slave)
+            slave = None
+
+            def read():
+                try:
+                    return os.read(master, 65536).decode("utf-8", errors="replace")
+                except OSError as error:
+                    if error.errno == errno.EIO:
+                        return ""
+                    raise
+
+            def write(value):
+                os.write(master, value.encode("utf-8"))
+
+            yield read, write
+        finally:
+            if process is not None:
+                stop_process(process)
+            if slave is not None:
+                os.close(slave)
+            os.close(master)
+
+
+def run_tui(command, directory, env, response_sent):
+    # Fresh homes cannot reuse a daemon. Disable starting one where supported.
+    help_result = subprocess.run(
+        [command[0], "--help"], cwd=directory, env=env, capture_output=True,
+        text=True, encoding="utf-8", timeout=30, check=True,
+    )
+    if "--no-daemon" in help_result.stdout:
+        command.insert(1, "--no-daemon")
+    output = queue.Queue()
+    transcript = ""
+    pending = ""
+    reader = None
+    try:
+        with tui_terminal(command, directory, env) as (read, write):
+            def read_output():
+                try:
+                    while chunk := read():
+                        output.put(chunk)
+                except (EOFError, OSError):
+                    pass
+                finally:
+                    output.put(None)
+
+            def answer_query(match):
+                write("\x1b[1;1R" if match[0] == "\x1b[6n" else "\x1b[?1;2c")
+                return ""
+
+            reader = threading.Thread(target=read_output, daemon=True)
+            reader.start()
+            deadline = time.monotonic() + PROCESS_TIMEOUT
+            while not response_sent.is_set():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Codex TUI timed out before completing a Responses request")
+                try:
+                    chunk = output.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if chunk is None:
+                    raise RuntimeError("Codex TUI exited before completing a Responses request")
+                transcript = (transcript + chunk)[-8000:]
+                pending += chunk
+
+                # Answer cursor-position and device queries, including split reads.
+                pending = re.sub(r"\x1b\[(?:6n|c)", answer_query, pending)[-4:]
+    except Exception as error:
+        raise RuntimeError(f"{error}\n{transcript}") from error
+    finally:
+        if reader is not None:
             reader.join(timeout=5)
-            process.stdout.close()
-            if not process.stdin.closed:
-                process.stdin.close()
 
 
 def response_events():
@@ -208,11 +249,14 @@ def response_events():
     return "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
 
 
-def capture_exec(binary, composed_user_agent, directory):
+def capture_client(binary, mode, directory):
+    if mode not in ("CLI", "Exec"):
+        raise ValueError(f"unsupported client mode: {mode}")
     directory.mkdir()
     env = child_environment(directory)
     captures = []
     unexpected = []
+    response_sent = threading.Event()
     body = response_events()
 
     class Handler(BaseHTTPRequestHandler):
@@ -235,6 +279,7 @@ def capture_exec(binary, composed_user_agent, directory):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            response_sent.set()
 
         def do_GET(self):
             unexpected.append(f"GET {self.path}")
@@ -249,32 +294,40 @@ def capture_exec(binary, composed_user_agent, directory):
             'wire_api="responses",requires_openai_auth=false,supports_websockets=false,'
             'request_max_retries=0,stream_max_retries=0,stream_idle_timeout_ms=10000}'
         )
-        command = [
-            str(binary), "exec", "--skip-git-repo-check", "--ephemeral",
-            "--sandbox", "read-only", "--color", "never",
+        command = [str(binary)]
+        if mode == "CLI":
+            command.extend(["--no-alt-screen", "--ask-for-approval", "never"])
+        else:
+            command.extend(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never"])
+        command.extend([
+            "--sandbox", "read-only",
             "-c", 'model_provider="ua_capture"', "-c", provider,
             "-c", 'model="ua-capture"',
             "-c", "features.enable_request_compression=false",
             "Reply with the text: UA capture complete.",
-        ]
+        ])
         try:
-            result = subprocess.run(
-                command, cwd=directory, env=env, stdin=subprocess.DEVNULL,
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=PROCESS_TIMEOUT,
-            )
+            if mode == "CLI":
+                run_tui(command, directory, env, response_sent)
+            else:
+                result = subprocess.run(
+                    command, cwd=directory, env=env, stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=PROCESS_TIMEOUT,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(f"codex exec failed ({result.returncode}):\n{result.stderr[-8000:]}")
         finally:
             server.shutdown()
             thread.join(timeout=5)
-    if result.returncode != 0:
-        raise RuntimeError(f"codex exec failed ({result.returncode}):\n{result.stderr[-8000:]}")
     if unexpected or len(captures) != 1:
         raise RuntimeError(f"expected one Responses request; captured={captures}, unexpected={unexpected}")
     capture = captures[0]
-    if capture["user_agent"] != composed_user_agent:
-        raise RuntimeError(f"exec HTTP User-Agent differs from app-server: {capture['user_agent']!r} != {composed_user_agent!r}")
-    if capture["originator"] != "codex_exec":
-        raise RuntimeError(f"unexpected exec originator: {capture['originator']!r}")
+    if not capture["user_agent"]:
+        raise RuntimeError(f"{mode} request contains no User-Agent")
+    identity = "codex-tui" if mode == "CLI" else "codex_exec"
+    if capture["originator"] != identity:
+        raise RuntimeError(f"unexpected {mode} originator: {capture['originator']!r}")
     return capture
 
 
@@ -294,11 +347,12 @@ def collect(version, platform_name, supplied_binary=None):
         )
         if result.stdout.strip() != f"codex-cli {version}":
             raise RuntimeError(f"binary version mismatch: requested {version}, received {result.stdout.strip()!r}")
-        interactive = initialize_user_agent(binary, version, "codex-tui", directory / "interactive")
-        exec_ua = initialize_user_agent(binary, version, "codex_exec", directory / "exec-init")
-        capture = capture_exec(binary, exec_ua, directory / "exec-capture")
+        captures = {
+            mode: capture_client(binary, mode, directory / mode.lower())
+            for mode in ("CLI", "Exec")
+        }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "codex_version": version,
         "platform": platform_name,
         "target": TARGETS[platform_name],
@@ -320,8 +374,8 @@ def collect(version, platform_name, supplied_binary=None):
         },
         "terminal": TERMINAL,
         "clients": {
-            "CLI": {"user_agent": interactive, "method": "app-server-initialize"},
-            "Exec": {"user_agent": exec_ua, "method": "app-server-initialize", "http_capture": capture},
+            mode: {"user_agent": capture["user_agent"], "method": "http-capture", "http_capture": capture}
+            for mode, capture in captures.items()
         },
     }
 

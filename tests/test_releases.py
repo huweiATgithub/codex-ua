@@ -1,4 +1,3 @@
-import base64
 import copy
 from html import unescape
 import json
@@ -42,17 +41,6 @@ def upstream_release(version, **updates):
     return release
 
 
-def source(name):
-    value = (
-        "let client = start_client(InProcessClientStartArgs {\n"
-        "  config: Arc::new(config),\n"
-        f'  client_name: "{name}".to_string(),\n'
-        '  client_version: env!("CARGO_PKG_VERSION").to_string(),\n'
-        "});"
-    )
-    return {"encoding": "base64", "content": base64.b64encode(value.encode()).decode()}
-
-
 def run_payload():
     platforms = {}
     for platform, target in releases.TARGETS.items():
@@ -61,9 +49,10 @@ def run_payload():
         clients = {}
         for mode, identity in (("CLI", "codex-tui"), ("Exec", "codex_exec")):
             ua = f"{identity}/0.10.0 ({system} 1.0; {machine}) xterm-256color ({identity}; 0.10.0)"
-            clients[mode] = {"user_agent": ua, "method": "app-server-initialize"}
-            if mode == "Exec":
-                clients[mode]["http_capture"] = {"user_agent": ua, "originator": identity}
+            clients[mode] = {
+                "user_agent": ua, "method": "http-capture",
+                "http_capture": {"user_agent": ua, "originator": identity},
+            }
         extension = ".exe.tar.gz" if system == "Windows" else ".tar.gz"
         platforms[platform] = {
             "target": target,
@@ -78,7 +67,7 @@ def run_payload():
             "terminal": {"TERM": "xterm-256color"}, "clients": clients,
         }
     return {
-        "schema_version": 1, "codex_version": "0.10.0",
+        "schema_version": 2, "codex_version": "0.10.0",
         "upstream_release": "https://github.com/openai/codex/releases/tag/rust-v0.10.0",
         "collector": {"commit": COMMIT, "run_url": "https://github.com/owner/catalog/actions/runs/123"},
         "platforms": platforms,
@@ -100,14 +89,12 @@ class DiscoveryTests(unittest.TestCase):
     def github(self, catalog=(), upstream=()):
         github = Mock(spec=releases.GitHub)
         github.releases.side_effect = lambda repository: iter(catalog if repository == REPOSITORY else upstream)
-        github.api.side_effect = lambda endpoint: source("codex-tui" if "/tui/" in endpoint else "codex_exec")
         return github
 
     def test_bootstrap_uses_current_latest(self):
         github = self.github()
-        profiles = github.api.side_effect
         github.api.side_effect = lambda endpoint: (
-            upstream_release("0.156.1") if endpoint.endswith("/latest") else profiles(endpoint)
+            upstream_release("0.156.1") if endpoint.endswith("/latest") else None
         )
         result = releases.discover(github, REPOSITORY)
         self.assertEqual(result["version"], "0.156.1")
@@ -204,27 +191,6 @@ class DiscoveryTests(unittest.TestCase):
             releases.discover(github, REPOSITORY, "0.10.0")
         with self.assertRaises(releases.MatrixError):
             releases.discover(github, REPOSITORY, "0.10.0; echo bad")
-
-    def test_source_identity_drift_fails_closed(self):
-        github = self.github()
-        github.by_tag.return_value = upstream_release("0.10.0")
-        github.api.side_effect = lambda endpoint: source("some-other-client")
-        with self.assertRaisesRegex(releases.ReleaseError, "CLI profile changed"):
-            releases.discover(github, REPOSITORY, "0.10.0")
-
-    def test_profile_supports_named_start_arguments(self):
-        github = self.github()
-        github.by_tag.return_value = upstream_release("0.10.0")
-
-        def named_arguments(endpoint):
-            value = source("codex-tui" if "/tui/" in endpoint else "codex_exec")
-            text = base64.b64decode(value["content"]).decode()
-            text = text.replace("let client = start_client(", "let in_process_start_args = ")
-            value["content"] = base64.b64encode(text.encode()).decode()
-            return value
-
-        github.api.side_effect = named_arguments
-        self.assertTrue(releases.discover(github, REPOSITORY, "0.10.0")["needed"])
 
 
 class PublicationTests(unittest.TestCase):

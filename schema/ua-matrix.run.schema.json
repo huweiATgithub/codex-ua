@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1,
+      "const": 2,
       "type": "integer"
     },
     "codex_version": {
@@ -588,14 +588,31 @@
               "type": "object",
               "required": [
                 "user_agent",
-                "method"
+                "method",
+                "http_capture"
               ],
               "properties": {
                 "user_agent": {
                   "$ref": "#/$defs/cliUserAgent"
                 },
                 "method": {
-                  "const": "app-server-initialize"
+                  "const": "http-capture"
+                },
+                "http_capture": {
+                  "type": "object",
+                  "required": [
+                    "user_agent",
+                    "originator"
+                  ],
+                  "properties": {
+                    "user_agent": {
+                      "$ref": "#/$defs/cliUserAgent"
+                    },
+                    "originator": {
+                      "const": "codex-tui"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -612,7 +629,7 @@
                   "$ref": "#/$defs/execUserAgent"
                 },
                 "method": {
-                  "const": "app-server-initialize"
+                  "const": "http-capture"
                 },
                 "http_capture": {
                   "type": "object",

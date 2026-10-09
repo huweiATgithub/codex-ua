@@ -154,16 +154,14 @@ class HttpCapture:
 @dataclass(frozen=True)
 class ClientObservation:
     user_agent: str
-    http_capture: HttpCapture | None = None
+    http_capture: HttpCapture
 
     @classmethod
     def parse(cls, value: object, mode: str, version: StableVersion) -> ClientObservation:
-        fields = {"user_agent", "method"}
-        if mode == "Exec":
-            fields.add("http_capture")
+        fields = {"user_agent", "method", "http_capture"}
         values = object_fields(value, fields, f"clients.{mode}")
-        if values["method"] != "app-server-initialize":
-            raise MatrixError(f"clients.{mode}.method: expected app-server-initialize")
+        if values["method"] != "http-capture":
+            raise MatrixError(f"clients.{mode}.method: expected http-capture")
         ua = nonempty_string(values["user_agent"], f"clients.{mode}.user_agent")
         identity = "codex-tui" if mode == "CLI" else "codex_exec"
         prefix = f"{identity}/{version.value} ("
@@ -176,21 +174,16 @@ class ClientObservation:
         if any(ord(char) < 32 or ord(char) == 127 for char in ua):
             raise MatrixError(f"clients.{mode}.user_agent: contains a control character")
 
-        capture = None
-        if mode == "Exec":
-            captured = object_fields(values["http_capture"], {"user_agent", "originator"}, "http_capture")
-            if captured["user_agent"] != ua:
-                raise MatrixError("clients.Exec.http_capture.user_agent: differs from initialized UA")
-            if captured["originator"] != "codex_exec":
-                raise MatrixError("clients.Exec.http_capture.originator: expected codex_exec")
-            capture = HttpCapture(ua, "codex_exec")
+        captured = object_fields(values["http_capture"], {"user_agent", "originator"}, "http_capture")
+        if captured["user_agent"] != ua:
+            raise MatrixError(f"clients.{mode}.http_capture.user_agent: differs from recorded UA")
+        if captured["originator"] != identity:
+            raise MatrixError(f"clients.{mode}.http_capture.originator: expected {identity}")
+        capture = HttpCapture(ua, identity)
         return cls(ua, capture)
 
     def to_dict(self) -> dict:
-        result = {"user_agent": self.user_agent, "method": "app-server-initialize"}
-        if self.http_capture is not None:
-            result["http_capture"] = asdict(self.http_capture)
-        return result
+        return {"user_agent": self.user_agent, "method": "http-capture", "http_capture": asdict(self.http_capture)}
 
 
 @dataclass(frozen=True)
@@ -211,8 +204,8 @@ class PlatformObservation:
             {"schema_version", "codex_version", "platform", "target", "source_url", "collected_at", "os", "runner", "terminal", "clients"},
             "platform record",
         )
-        if type(values["schema_version"]) is not int or values["schema_version"] != 1:
-            raise MatrixError("schema_version: expected 1")
+        if type(values["schema_version"]) is not int or values["schema_version"] != 2:
+            raise MatrixError("schema_version: expected 2")
         if StableVersion.parse(values["codex_version"]) != version:
             raise MatrixError("codex_version: differs from requested collection version")
         platform = nonempty_string(values["platform"], "platform")
@@ -278,8 +271,8 @@ def parse_run_matrix(value: object) -> dict:
         {"schema_version", "codex_version", "upstream_release", "collector", "platforms"},
         "matrix",
     )
-    if type(values["schema_version"]) is not int or values["schema_version"] != 1:
-        raise MatrixError("schema_version: expected 1")
+    if type(values["schema_version"]) is not int or values["schema_version"] != 2:
+        raise MatrixError("schema_version: expected 2")
     version = StableVersion.parse(values["codex_version"])
     if values["upstream_release"] != version.upstream_release:
         raise MatrixError("upstream_release: differs from the Codex version's official release URL")
@@ -294,14 +287,14 @@ def parse_run_matrix(value: object) -> dict:
         )
         try:
             observation = PlatformObservation.parse(
-                {"schema_version": 1, "codex_version": version.value, "platform": platform, **record},
+                {"schema_version": 2, "codex_version": version.value, "platform": platform, **record},
                 version,
             )
         except MatrixError as error:
             raise MatrixError(f"platforms.{platform}: {error}") from error
         platforms[platform] = observation.to_dict()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "codex_version": version.value,
         "upstream_release": version.upstream_release,
         "collector": asdict(collector),
@@ -350,7 +343,7 @@ def assemble_matrix(version: str, input_dir: Path, collector_commit: str, run_ur
     if missing:
         raise MatrixError(f"missing platforms: {', '.join(sorted(missing))}")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "codex_version": requested_version.value,
         "upstream_release": requested_version.upstream_release,
         "collector": asdict(collector),

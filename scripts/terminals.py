@@ -338,6 +338,8 @@ def run_in_terminal(profile, release, binary, platform, sampling_command, direct
         if sys.platform == "darwin":
             # Use the application's official CLI to launch its macOS desktop.
             command[0] = str(binary.parent.parent / "Resources" / "app" / "bin" / "code")
+            # Fresh automated profiles must not wait on an OS Keychain dialog.
+            command.append("--use-mock-keychain")
         if sys.platform.startswith("linux"):
             command.append("--no-sandbox")
     else:

@@ -324,8 +324,12 @@ def run_in_terminal(profile, release, binary, platform, sampling_command, direct
             f"  const timer = setInterval(() => {{ if (fs.existsSync({json.dumps(str(result_path))})) {{ clearInterval(timer); vscode.commands.executeCommand('workbench.action.quit'); }} }}, 100);\n"
             "};\n", encoding="utf-8")
         command = [str(binary), "--disable-gpu", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes",
+                   "--log", "trace",
                    "--user-data-dir", str(directory / "user"), "--extensions-dir", str(directory / "extensions"),
                    "--extensionDevelopmentPath=" + str(extension), str(directory)]
+        if sys.platform == "darwin":
+            # Use the application's official CLI to launch its macOS desktop.
+            command[0] = str(binary.parent.parent / "Resources" / "app" / "bin" / "code")
         if sys.platform.startswith("linux"):
             command.append("--no-sandbox")
     else:
@@ -366,9 +370,87 @@ def collect_profiles(codex_binary, platform, releases, directory):
     return observations
 
 
+@contextmanager
+def native_launcher(profile, command, directory, env, log):
+    process = subprocess.Popen(command, env=env, cwd=directory, stdout=log, stderr=log)
+    if profile != "vscode" or os.name != "nt":
+        yield process
+        return
+    # A private Windows job owns the complete application tree, including helpers
+    # whose executables live outside the downloaded application directory.
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [("ProcessTime", ctypes.c_int64), ("JobTime", ctypes.c_int64),
+                    ("Flags", wintypes.DWORD), ("MinWorkingSet", ctypes.c_size_t),
+                    ("MaxWorkingSet", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("Priority", wintypes.DWORD), ("Scheduling", wintypes.DWORD)]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [("Basic", BasicLimits), ("IoCounters", ctypes.c_uint64 * 6),
+                    ("ProcessMemory", ctypes.c_size_t), ("JobMemory", ctypes.c_size_t),
+                    ("PeakProcessMemory", ctypes.c_size_t), ("PeakJobMemory", ctypes.c_size_t)]
+
+    class Accounting(ctypes.Structure):
+        _fields_ = [("UserTime", ctypes.c_int64), ("KernelTime", ctypes.c_int64),
+                    ("PeriodUserTime", ctypes.c_int64), ("PeriodKernelTime", ctypes.c_int64),
+                    ("PageFaults", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD), ("TerminatedProcesses", wintypes.DWORD)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel.SetInformationJobObject.restype = wintypes.BOOL
+    kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.TerminateJobObject.restype = wintypes.BOOL
+    kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+    kernel.QueryInformationJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    job = kernel.CreateJobObjectW(None, None)
+    if not job:
+        error = ctypes.WinError(ctypes.get_last_error())
+        process.kill()
+        process.wait(timeout=10)
+        raise error
+    assigned = False
+    try:
+        limits = ExtendedLimits()
+        limits.Basic.Flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel.AssignProcessToJobObject(job, int(process._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        assigned = True
+        yield process
+    finally:
+        try:
+            if not assigned and process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+            if not kernel.TerminateJobObject(job, 1):
+                raise ctypes.WinError(ctypes.get_last_error())
+            deadline = time.monotonic() + 10
+            while True:
+                accounting = Accounting()
+                if not kernel.QueryInformationJobObject(job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if accounting.ActiveProcesses == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("vscode: native application helpers did not exit")
+                time.sleep(0.05)
+        finally:
+            kernel.CloseHandle(job)
+
+
 def wait_probe(profile, command, directory, launch_env, result_path):
-    with (directory / "launcher.log").open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(command, env=launch_env, cwd=directory, stdout=log, stderr=log)
+    with (directory / "launcher.log").open("w", encoding="utf-8") as log, \
+            native_launcher(profile, command, directory, launch_env, log) as process:
         try:
             startup_deadline = time.monotonic() + 90
             deadline = time.monotonic() + 690
@@ -398,7 +480,8 @@ def wait_probe(profile, command, directory, launch_env, result_path):
             if profile == "vscode":
                 diagnostic += f"\nProbe extension activated: {(directory / 'version.txt').exists()}"
                 for path in sorted((directory / "user" / "logs").rglob("*.log")):
-                    diagnostic += f"\n{path.relative_to(directory)}:\n" + path.read_text(encoding="utf-8", errors="replace")[-2000:]
+                    limit = 8000 if path.name in {"terminal.log", "ptyhost.log", "exthost.log"} else 2000
+                    diagnostic += f"\n{path.relative_to(directory)}:\n" + path.read_text(encoding="utf-8", errors="replace")[-limit:]
             raise RuntimeError(f"{error}\n{diagnostic}") from error
         finally:
             if process.poll() is None:
@@ -408,23 +491,6 @@ def wait_probe(profile, command, directory, launch_env, result_path):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
-            if profile == "vscode" and os.name == "nt":
-                # Electron can leave helpers alive after its main process exits.
-                # Select only executables in this probe's temporary installation.
-                cleanup = r"""
-$ErrorActionPreference = 'Stop'
-$root = [System.IO.Path]::GetFullPath($env:CODEX_UA_APP_DIRECTORY).TrimEnd('\') + '\'
-$owned = @(Get-Process | Where-Object {
-    $_.Path -and $_.Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
-})
-$owned | Stop-Process -Force -ErrorAction SilentlyContinue
-foreach ($process in $owned) {
-    if (-not $process.WaitForExit(10000)) { throw 'VS Code helper did not exit' }
-}
-"""
-                subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cleanup],
-                               env=dict(os.environ, CODEX_UA_APP_DIRECTORY=str(Path(command[0]).parent)),
-                               check=True, capture_output=True, text=True, timeout=60)
     return result
 
 

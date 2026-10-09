@@ -4,9 +4,11 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import subprocess
 import tempfile
 import sys
 import tarfile
+import time
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -38,6 +40,42 @@ def releases():
 
 
 class TerminalTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "native Windows application job")
+    def test_windows_launcher_reaps_children_after_parent_exit_without_touching_other_processes(self):
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pid_file = root / "child.pid"
+            child = "import os,time; from pathlib import Path; Path(" + repr(str(pid_file)) + ").write_text(str(os.getpid())); time.sleep(60)"
+            parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); time.sleep(60)"
+            unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            handle = None
+            try:
+                with (root / "launcher.log").open("w") as log, \
+                        terminals.native_launcher("vscode", [sys.executable, "-c", parent], root, dict(os.environ), log) as process:
+                    deadline = time.monotonic() + 15
+                    while not pid_file.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(pid_file.exists(), "owned child did not start")
+                    handle = kernel.OpenProcess(0x100000, False, int(pid_file.read_text()))
+                    self.assertTrue(handle)
+                    process.terminate()
+                    process.wait(timeout=10)
+                self.assertEqual(kernel.WaitForSingleObject(handle, 10000), 0, "child survived application cleanup")
+                self.assertIsNone(unrelated.poll(), "cleanup touched a process outside the application job")
+            finally:
+                if handle:
+                    kernel.CloseHandle(handle)
+                unrelated.kill()
+                unrelated.wait(timeout=10)
+
     def test_macos_install_uses_the_bundle_executable_and_preserves_its_path(self):
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as bundle:

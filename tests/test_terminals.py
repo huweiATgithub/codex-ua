@@ -3,10 +3,12 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import tempfile
 import sys
 import tarfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from scripts import terminals
@@ -36,6 +38,25 @@ def releases():
 
 
 class TerminalTests(unittest.TestCase):
+    def test_macos_install_uses_the_bundle_executable_and_preserves_its_path(self):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("Visual Studio Code.app/Contents/Info.plist", plistlib.dumps({"CFBundleExecutable": "Code"}))
+            bundle.writestr("Visual Studio Code.app/Contents/MacOS/Code", b"native application")
+            bundle.writestr("Visual Studio Code.app/Contents/Resources/app/bin/code", b"CLI wrapper")
+        archive.seek(0)
+        with tempfile.TemporaryDirectory() as temporary, patch("scripts.terminals.sys.platform", "darwin"), \
+                patch("scripts.terminals.urllib.request.urlopen", return_value=archive), \
+                patch("scripts.terminals.subprocess.run") as extract:
+            def ditto(command, **kwargs):
+                with zipfile.ZipFile(command[2]) as source:
+                    source.extractall(command[3])
+            extract.side_effect = ditto
+            root = Path(temporary) / "app"
+            selected = terminals.parse_releases(releases())["vscode"]
+            binary = terminals.install("vscode", selected, "macos-arm64", root)
+            self.assertEqual(binary, root / "Visual Studio Code.app" / "Contents" / "MacOS" / "Code")
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux VS Code archive layout")
     def test_install_selects_the_application_instead_of_cli_or_bash_completion(self):
         archive = io.BytesIO()

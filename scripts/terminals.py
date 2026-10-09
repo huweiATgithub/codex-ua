@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import socket
@@ -199,10 +200,18 @@ def install(profile, release, platform, directory):
             with tarfile.open(archive) as source:
                 source.extractall(directory, filter="data")
         names = ({"WindowsTerminal": "WindowsTerminal.exe", "herdr": "herdr.exe"} if os.name == "nt"
-                 else {"vscode": "Electron" if sys.platform == "darwin" else "code"})
+                 else {"vscode": "code"})
         name = names.get(profile, "Code.exe")
         candidates = [path for path in directory.rglob(name) if path.is_file()]
-        if profile == "vscode" and sys.platform != "darwin" and os.name != "nt":
+        if profile == "vscode" and sys.platform == "darwin":
+            contents = directory / "Visual Studio Code.app" / "Contents"
+            with (contents / "Info.plist").open("rb") as source:
+                name = plistlib.load(source)["CFBundleExecutable"]
+            if not isinstance(name, str) or Path(name).name != name:
+                raise ValueError("vscode: invalid native executable in the application bundle")
+            expected = contents / "MacOS" / name
+            candidates = [expected] if expected.is_file() else []
+        elif profile == "vscode" and os.name != "nt":
             expected = directory / ("VSCode-linux-" + platform.rsplit("-", 1)[1]) / "code"
             candidates = [path for path in candidates if path == expected]
         if len(candidates) != 1:
@@ -385,6 +394,25 @@ def wait_probe(profile, command, directory, launch_env, result_path):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+            if profile == "vscode" and os.name == "nt":
+                # Electron can leave helpers alive after its main process exits.
+                # Select only executables in this probe's temporary installation.
+                cleanup = r"""
+$ErrorActionPreference = 'Stop'
+$root = [System.IO.Path]::GetFullPath($env:CODEX_UA_APP_DIRECTORY).TrimEnd('\') + '\'
+Get-CimInstance Win32_Process | Where-Object {
+    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
+} | ForEach-Object {
+    $process = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
+    if ($process) {
+        Stop-Process -InputObject $process -Force -ErrorAction SilentlyContinue
+        if (-not $process.WaitForExit(10000)) { throw 'VS Code helper did not exit' }
+    }
+}
+"""
+                subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cleanup],
+                               env=dict(os.environ, CODEX_UA_APP_DIRECTORY=str(Path(command[0]).parent)),
+                               check=True, capture_output=True, text=True, timeout=30)
     return result
 
 

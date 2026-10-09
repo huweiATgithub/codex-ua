@@ -9,7 +9,7 @@ Linux VS Code hosts need Xvfb, xauth and the application's native GUI libraries.
 
 An unsupported combination produces {"unsupported": reason} without launching.
 Supported launch failures raise an error; sampling failures retain their exit
-status. The command has ten minutes to finish, plus one minute for application
+status. The command has ten minutes to finish, plus ninety seconds for application
 startup. No terminal detection variables are synthesized.
 """
 
@@ -293,6 +293,7 @@ def run_in_terminal(profile, release, binary, platform, sampling_command, direct
     binary = binary.resolve()
     directory = directory.resolve()
     directory.mkdir()
+    print(f"Launching {profile} {release.version} on {platform}", flush=True)
     result_path = directory / "result.json"
     configuration = directory / "probe.json"
     configuration.write_text(json.dumps({"command": sampling_command, "cwd": str(directory), "output": str(result_path),
@@ -368,8 +369,15 @@ def wait_probe(profile, command, directory, launch_env, result_path):
     with (directory / "launcher.log").open("w", encoding="utf-8") as log:
         process = subprocess.Popen(command, env=launch_env, cwd=directory, stdout=log, stderr=log)
         try:
-            deadline = time.monotonic() + 660
+            startup_deadline = time.monotonic() + 90
+            deadline = time.monotonic() + 690
+            started = False
             while not result_path.exists():
+                if not started and result_path.with_name("started.json").exists():
+                    started = True
+                    print(f"{profile}: sampling started in the application's PTY", flush=True)
+                if not started and time.monotonic() >= startup_deadline:
+                    raise RuntimeError(f"{profile}: terminal did not start the probe within 90 seconds")
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"{profile}: terminal probe timed out; see {directory / 'launcher.log'}")
                 # Windows Terminal's launcher may exit while its window runs the helper.
@@ -381,6 +389,7 @@ def wait_probe(profile, command, directory, launch_env, result_path):
                 raise RuntimeError(f"{profile}: {result['error']}")
             if result["tty"] != [True, True, True]:
                 raise RuntimeError(f"{profile}: probe did not run in a terminal-owned PTY")
+            print(f"{profile}: sampling completed with exit status {result['exit_code']}", flush=True)
             process.wait(timeout=30)
         except Exception as error:
             log.flush()
@@ -400,19 +409,17 @@ def wait_probe(profile, command, directory, launch_env, result_path):
                 cleanup = r"""
 $ErrorActionPreference = 'Stop'
 $root = [System.IO.Path]::GetFullPath($env:CODEX_UA_APP_DIRECTORY).TrimEnd('\') + '\'
-Get-CimInstance Win32_Process | Where-Object {
-    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
-} | ForEach-Object {
-    $process = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
-    if ($process) {
-        Stop-Process -InputObject $process -Force -ErrorAction SilentlyContinue
-        if (-not $process.WaitForExit(10000)) { throw 'VS Code helper did not exit' }
-    }
+$owned = @(Get-Process | Where-Object {
+    $_.Path -and $_.Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
+})
+$owned | Stop-Process -Force -ErrorAction SilentlyContinue
+foreach ($process in $owned) {
+    if (-not $process.WaitForExit(10000)) { throw 'VS Code helper did not exit' }
 }
 """
                 subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cleanup],
                                env=dict(os.environ, CODEX_UA_APP_DIRECTORY=str(Path(command[0]).parent)),
-                               check=True, capture_output=True, text=True, timeout=30)
+                               check=True, capture_output=True, text=True, timeout=60)
     return result
 
 

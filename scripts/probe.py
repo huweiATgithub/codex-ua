@@ -14,6 +14,7 @@ def main():
     try:
         if not all(os.isatty(fd) for fd in (0, 1, 2)):
             raise RuntimeError("the probe must run inside a real terminal PTY")
+        output.with_name("started.json").write_text(json.dumps({"tty": [True, True, True]}), encoding="utf-8")
         completed = subprocess.run(configuration["command"], cwd=configuration["cwd"], timeout=600)
         result = {
             "exit_code": completed.returncode, "tty": [True, True, True],

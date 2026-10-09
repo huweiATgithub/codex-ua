@@ -169,6 +169,14 @@ class TerminalTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, r"launcher failed \(4\)[\s\S]*native startup failed"):
                 terminals.wait_probe("vscode", command, root, dict(os.environ), root / "result.json")
 
+    def test_launcher_without_a_pty_probe_fails_at_the_startup_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary, patch("scripts.terminals.subprocess.Popen") as launch, \
+                patch("scripts.terminals.time.monotonic", side_effect=[0, 0, 91]):
+            launch.return_value.poll.return_value = 0
+            root = Path(temporary)
+            with self.assertRaisesRegex(RuntimeError, "terminal did not start the probe"):
+                terminals.wait_probe("vscode", ["native-terminal"], root, dict(os.environ), root / "result.json")
+
 
 if __name__ == "__main__":
     unittest.main()

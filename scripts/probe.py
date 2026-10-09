@@ -5,11 +5,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import traceback
 
 
 def main():
-    configuration = json.loads(Path(os.environ["CODEX_UA_PROBE_CONFIG"]).read_text(encoding="utf-8"))
+    config_path = sys.argv[2] if len(sys.argv) == 3 and sys.argv[1] == "--config" else os.environ["CODEX_UA_PROBE_CONFIG"]
+    configuration = json.loads(Path(config_path).read_text(encoding="utf-8"))
     output = Path(configuration["output"])
     try:
         if not all(os.isatty(fd) for fd in (0, 1, 2)):

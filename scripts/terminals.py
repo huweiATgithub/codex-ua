@@ -319,7 +319,8 @@ def run_in_terminal(profile, release, binary, platform, sampling_command, direct
             "const vscode = require('vscode'); const fs = require('fs');\n"
             "exports.activate = () => {\n"
             f"  fs.writeFileSync({json.dumps(str(directory / 'version.txt'))}, vscode.version);\n"
-            f"  vscode.window.createTerminal({{name:'Codex UA probe', shellPath:{json.dumps(sys.executable)}, shellArgs:{json.dumps(['-u', str(helper)])}}}).show();\n"
+            f"  vscode.window.onDidCloseTerminal(t => {{ if (!fs.existsSync({json.dumps(str(result_path))})) fs.writeFileSync({json.dumps(str(result_path))}, JSON.stringify({{error:'Terminal closed before sampling completed: ' + JSON.stringify(t.exitStatus)}})); }});\n"
+            f"  vscode.window.createTerminal({{name:'Codex UA probe', shellPath:{json.dumps(sys.executable)}, shellArgs:{json.dumps(['-u', str(helper), '--config', str(configuration)])}}}).show();\n"
             f"  const timer = setInterval(() => {{ if (fs.existsSync({json.dumps(str(result_path))})) {{ clearInterval(timer); vscode.commands.executeCommand('workbench.action.quit'); }} }}, 100);\n"
             "};\n", encoding="utf-8")
         command = [str(binary), "--disable-gpu", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes",
@@ -394,6 +395,10 @@ def wait_probe(profile, command, directory, launch_env, result_path):
         except Exception as error:
             log.flush()
             diagnostic = (directory / "launcher.log").read_text(encoding="utf-8", errors="replace")[-8000:]
+            if profile == "vscode":
+                diagnostic += f"\nProbe extension activated: {(directory / 'version.txt').exists()}"
+                for path in sorted((directory / "user" / "logs").rglob("*.log")):
+                    diagnostic += f"\n{path.relative_to(directory)}:\n" + path.read_text(encoding="utf-8", errors="replace")[-2000:]
             raise RuntimeError(f"{error}\n{diagnostic}") from error
         finally:
             if process.poll() is None:

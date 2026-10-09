@@ -118,6 +118,21 @@ class CollectorTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, message):
                     capture_client(self.fake_client(directory, headers), "Exec", directory / "capture")
 
+    @unittest.skipUnless(os.name == "posix", "uses a native Unix test client")
+    def test_repeated_requests_require_identical_captured_headers(self):
+        first = {"User-Agent": "measured UA", "originator": "codex_exec"}
+        for second in (first, {**first, "User-Agent": "different UA"}):
+            with self.subTest(second=second), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                binary = self.fake_client(directory, [first, second])
+                if second == first:
+                    self.assertEqual(capture_client(binary, "Exec", directory / "capture"), {
+                        "user_agent": "measured UA", "originator": "codex_exec",
+                    })
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "inconsistent headers"):
+                        capture_client(binary, "Exec", directory / "capture")
+
 
 if __name__ == "__main__":
     unittest.main()

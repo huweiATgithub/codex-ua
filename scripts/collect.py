@@ -114,6 +114,7 @@ def child_environment(directory):
         "check_for_update_on_startup = false\n"
         "cli_auth_credentials_store = 'file'\n"
         "web_search = 'disabled'\n"
+        "[features]\nplugins = false\n"
         "[analytics]\nenabled = false\n"
         "[feedback]\nenabled = false\n"
         "[otel]\nexporter = 'none'\ntrace_exporter = 'none'\nmetrics_exporter = 'none'\n"
@@ -148,7 +149,15 @@ def tui_terminal(command, directory, env):
         try:
             yield process.read, process.write
         finally:
-            process.close(force=True)
+            try:
+                if process.isalive():
+                    # The TUI can own an app-server and other child processes.
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        env=env, capture_output=True, timeout=10, check=True,
+                    )
+            finally:
+                process.close(force=True)
     else:
         import pty
         import termios
@@ -320,9 +329,11 @@ def capture_client(binary, mode, directory):
         finally:
             server.shutdown()
             thread.join(timeout=5)
-    if unexpected or len(captures) != 1:
-        raise RuntimeError(f"expected one Responses request; captured={captures}, unexpected={unexpected}")
+    if unexpected or not captures:
+        raise RuntimeError(f"expected Responses requests; captured={captures}, unexpected={unexpected}")
     capture = captures[0]
+    if any(item != capture for item in captures[1:]):
+        raise RuntimeError(f"Responses requests contain inconsistent headers: {captures}")
     if not capture["user_agent"]:
         raise RuntimeError(f"{mode} request contains no User-Agent")
     identity = "codex-tui" if mode == "CLI" else "codex_exec"

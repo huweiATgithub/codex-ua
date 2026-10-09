@@ -45,8 +45,9 @@ if Path(__file__).with_name("hold-request").exists():
     while True:
         time.sleep(1)
 url = re.search(r'base_url="([^"]+)"', provider)[1] + "/responses"
-with urllib.request.urlopen(urllib.request.Request(url, data=b"{}", headers=headers)) as response:
-    response.read()
+for request_headers in headers if isinstance(headers, list) else [headers]:
+    with urllib.request.urlopen(urllib.request.Request(url, data=b"{}", headers=request_headers)) as response:
+        response.read()
 if interactive:
     while True:
         time.sleep(1)

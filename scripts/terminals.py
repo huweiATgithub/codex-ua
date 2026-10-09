@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -315,12 +316,19 @@ def run_in_terminal(profile, release, binary, platform, sampling_command, direct
         extension.mkdir()
         (extension / "package.json").write_text(json.dumps({"name": "codex-ua-probe", "publisher": "codex-ua", "version": "0.0.1",
             "engines": {"vscode": "^1.90.0"}, "activationEvents": ["*"], "main": "index.js"}), encoding="utf-8")
+        terminal_options = {"name": "Codex UA probe", "cwd": str(directory)}
+        probe_argv = [sys.executable, "-u", str(helper), "--config", str(configuration)]
+        if sys.platform != "darwin":
+            terminal_options.update(shellPath=sys.executable, shellArgs=probe_argv[1:])
+        launch_probe = (f"terminal.sendText({json.dumps('exec ' + shlex.join(probe_argv))}, true);"
+                        if sys.platform == "darwin" else "")
         (extension / "index.js").write_text(
             "const vscode = require('vscode'); const fs = require('fs');\n"
             "exports.activate = () => {\n"
             f"  fs.writeFileSync({json.dumps(str(directory / 'version.txt'))}, vscode.version);\n"
-            f"  vscode.window.onDidCloseTerminal(t => {{ if (!fs.existsSync({json.dumps(str(result_path))})) fs.writeFileSync({json.dumps(str(result_path))}, JSON.stringify({{error:'Terminal closed before sampling completed: ' + JSON.stringify(t.exitStatus)}})); }});\n"
-            f"  vscode.window.createTerminal({{name:'Codex UA probe', shellPath:{json.dumps(sys.executable)}, shellArgs:{json.dumps(['-u', str(helper), '--config', str(configuration)])}}}).show();\n"
+            f"  vscode.window.onDidCloseTerminal(t => {{ if (t.name === 'Codex UA probe' && !fs.existsSync({json.dumps(str(result_path))})) fs.writeFileSync({json.dumps(str(result_path))}, JSON.stringify({{error:'Terminal closed before sampling completed: ' + JSON.stringify(t.exitStatus)}})); }});\n"
+            f"  const terminal = vscode.window.createTerminal({json.dumps(terminal_options)}); terminal.show();\n"
+            f"  terminal.processId.then(pid => {{ fs.writeFileSync({json.dumps(str(directory / 'terminal-process.txt'))}, String(pid)); {launch_probe} }});\n"
             f"  const timer = setInterval(() => {{ if (fs.existsSync({json.dumps(str(result_path))})) {{ clearInterval(timer); vscode.commands.executeCommand('workbench.action.quit'); }} }}, 100);\n"
             "};\n", encoding="utf-8")
         command = [str(binary), "--disable-gpu", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes",
@@ -479,9 +487,12 @@ def wait_probe(profile, command, directory, launch_env, result_path):
             diagnostic = (directory / "launcher.log").read_text(encoding="utf-8", errors="replace")[-8000:]
             if profile == "vscode":
                 diagnostic += f"\nProbe extension activated: {(directory / 'version.txt').exists()}"
+                diagnostic += f"\nTerminal process started: {(directory / 'terminal-process.txt').exists()}"
                 for path in sorted((directory / "user" / "logs").rglob("*.log")):
-                    limit = 8000 if path.name in {"terminal.log", "ptyhost.log", "exthost.log"} else 2000
-                    diagnostic += f"\n{path.relative_to(directory)}:\n" + path.read_text(encoding="utf-8", errors="replace")[-limit:]
+                    contents = path.read_text(encoding="utf-8", errors="replace")
+                    relevant = [line for line in contents.splitlines()
+                                if any(token in line.lower() for token in ("[error]", "codex-ua", "terminal", "pty", "shellenv"))]
+                    diagnostic += f"\n{path.relative_to(directory)}:\n" + "\n".join(relevant)[-12000:]
             raise RuntimeError(f"{error}\n{diagnostic}") from error
         finally:
             if process.poll() is None:

@@ -24,6 +24,7 @@ from pathlib import Path
 import plistlib
 import re
 import shlex
+import signal
 import shutil
 import socket
 import subprocess
@@ -383,6 +384,12 @@ def collect_profiles(codex_binary, platform, releases, directory):
 @contextmanager
 def native_launcher(profile, command, directory, env, log):
     process = subprocess.Popen(command, env=env, cwd=directory, stdout=log, stderr=log)
+    if profile == "vscode" and sys.platform == "darwin":
+        try:
+            yield process
+        finally:
+            stop_macos_application(Path(command[0]).parents[4])
+        return
     if profile != "vscode" or os.name != "nt":
         yield process
         return
@@ -456,6 +463,36 @@ def native_launcher(profile, command, directory, env, log):
                 time.sleep(0.05)
         finally:
             kernel.CloseHandle(job)
+
+
+def stop_macos_application(bundle):
+    """Wait for this downloaded application to quit, then reap only its helpers."""
+    import ctypes
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    libproc.proc_pidpath.restype = ctypes.c_int
+    bundle = bundle.resolve()
+    started = time.monotonic()
+    while True:
+        owned = []
+        pids = subprocess.check_output(["ps", "-axo", "pid="], text=True, timeout=10).split()
+        for value in pids:
+            pid = int(value)
+            path = ctypes.create_string_buffer(4096)
+            if libproc.proc_pidpath(pid, path, len(path)) > 0 and Path(os.fsdecode(path.value)).is_relative_to(bundle):
+                owned.append(pid)
+        if not owned:
+            return
+        elapsed = time.monotonic() - started
+        if elapsed > 10:
+            raise RuntimeError("vscode: native macOS application helpers did not exit")
+        if elapsed > 3:
+            for pid in owned:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        time.sleep(0.1)
 
 
 def wait_probe(profile, command, directory, launch_env, result_path):

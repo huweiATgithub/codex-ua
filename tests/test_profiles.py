@@ -13,7 +13,7 @@ from test_terminals import releases
 
 def profiled_record(platform):
     record = platform_record(platform)
-    record["schema_version"] = 3
+    record["schema_version"] = 4
     record["terminal_releases"] = releases()
     runner = record["runner"]
     if platform.startswith("linux-") and not platform.startswith("linux-ubuntu-"):
@@ -21,23 +21,34 @@ def profiled_record(platform):
     if platform == "windows-x64":
         runner["image"] = "win25"
     selected = terminals.parse_releases(record["terminal_releases"])
-    record["profiles"] = {}
+    record["profiles"] = {"xterm-256color": {
+        "status": "collected", "application": None, "launch_method": "controlled-environment",
+        "terminal": record.pop("terminal"), "tty": None, "clients": record.pop("clients"),
+    }}
     for profile, release in selected.items():
-        reason = terminals.unsupported_reason(profile, platform, release, runner["container_image"], runner["image"])
+        wsl = terminals.uses_wsl(profile, platform)
+        reason = None if wsl else terminals.unsupported_reason(profile, platform, release, runner["container_image"], runner["image"])
         if reason:
             record["profiles"][profile] = {"status": "unsupported", "reason": reason}
             continue
         token = profile if profile == "WindowsTerminal" else profile + "/" + release.version
-        clients = copy.deepcopy(record["clients"])
+        clients = copy.deepcopy(record["profiles"]["xterm-256color"]["clients"])
         for client in clients.values():
             ua = client["user_agent"].replace("xterm-256color", token)
             client["user_agent"] = ua
             client["http_capture"]["user_agent"] = ua
+        target = "windows-" + platform.rsplit("-", 1)[1] if wsl else terminals.native_target(platform)
         record["profiles"][profile] = {
-            "status": "collected", "application": {"version": release.version, "source_url": release.assets[terminals.native_target(platform)]},
-            "launch_method": terminals.LAUNCH_METHODS[profile], "terminal": {"TERM_PROGRAM": profile},
+            "status": "collected", "application": {"version": release.version, "source_url": release.assets[target]},
+            "launch_method": "windows-terminal-wsl" if wsl else terminals.LAUNCH_METHODS[profile], "terminal": {"TERM_PROGRAM": profile},
             "tty": [True, True, True], "clients": clients,
         }
+        if wsl:
+            guest = copy.deepcopy(record["os"])
+            guest["distribution"]["version_id"] = "24.04"
+            record["profiles"][profile].update(
+                terminal={"TERM": "xterm-256color", "WT_SESSION": "real-terminal-session", "WSL_DISTRO_NAME": "Ubuntu-24.04"},
+                runtime={"os": guest, "runner": {**runner, "image": "win25" if platform.endswith("-x64") else "win11-arm64"}})
     return record
 
 
@@ -57,10 +68,14 @@ class ProfileTests(unittest.TestCase):
 
     def test_complete_native_coverage_preserves_actual_headers_and_unsupported(self):
         results = matrix.publication_matrices(self.assemble())
-        self.assertEqual(results.run["schema_version"], 3)
-        self.assertEqual(results.matrix["schema_version"], 2)
+        self.assertEqual(results.run["schema_version"], 4)
+        self.assertEqual(results.matrix["schema_version"], 3)
         self.assertEqual(results.run["terminal_releases"], releases())
         for platform in PLATFORMS:
+            self.assertEqual(set(results.matrix["platforms"][platform]), {"profiles"})
+            self.assertNotIn("clients", results.run["platforms"][platform])
+            self.assertNotIn("terminal", results.run["platforms"][platform])
+            self.assertEqual(set(results.matrix["platforms"][platform]["profiles"]), set(terminals.PROFILES))
             expected = profiled_record(platform)["profiles"]
             self.assertEqual(results.run["platforms"][platform]["profiles"], expected)
             for profile, context in expected.items():
@@ -76,6 +91,9 @@ class ProfileTests(unittest.TestCase):
         missing = copy.deepcopy(original)
         del missing["profiles"]["vscode"]
         variants.append(missing)
+        missing_xterm = copy.deepcopy(original)
+        del missing_xterm["profiles"]["xterm-256color"]
+        variants.append(missing_xterm)
         missing_client = copy.deepcopy(original)
         del missing_client["profiles"]["vscode"]["clients"]["CLI"]
         variants.append(missing_client)
@@ -120,13 +138,34 @@ class ProfileTests(unittest.TestCase):
             self.assemble()
 
     def test_future_terminal_detection_is_preserved_without_reconstructing_the_ua(self):
-        changed = profiled_record("linux-ubuntu-x64")
-        client = changed["profiles"]["vscode"]["clients"]["CLI"]
-        observed = client["user_agent"].replace("vscode/1.141.0", "future-terminal/2.0")
-        client["user_agent"] = client["http_capture"]["user_agent"] = observed
-        self.write(changed)
-        result = matrix.publication_matrices(self.assemble())
-        self.assertEqual(result.matrix["platforms"]["linux-ubuntu-x64"]["profiles"]["vscode"]["CLI"], observed)
+        for profile in terminals.PROFILES:
+            changed = profiled_record("linux-ubuntu-x64")
+            client = changed["profiles"][profile]["clients"]["CLI"]
+            token = profile if profile in ("xterm-256color", "WindowsTerminal") else profile + "/" + releases()[profile]["version"]
+            observed = client["user_agent"].replace(token, "future-terminal/2.0")
+            client["user_agent"] = client["http_capture"]["user_agent"] = observed
+            self.write(changed)
+            result = matrix.publication_matrices(self.assemble())
+            with self.subTest(profile=profile):
+                self.assertEqual(result.matrix["platforms"]["linux-ubuntu-x64"]["profiles"][profile]["CLI"], observed)
+
+    def test_legacy_profile_layout_remains_readable_without_rewriting_published_assets(self):
+        for platform in PLATFORMS:
+            record = profiled_record(platform)
+            record["schema_version"] = 3
+            if terminals.uses_wsl("WindowsTerminal", platform):
+                record["profiles"]["WindowsTerminal"] = {
+                    "status": "unsupported", "reason": "Windows Terminal has no native release for this operating system."}
+            xterm = record["profiles"].pop("xterm-256color")
+            record.update(terminal=xterm["terminal"], clients=xterm["clients"])
+            self.write(record)
+        run = self.assemble()
+        results = matrix.publication_matrices(run)
+        self.assertEqual(results.run, run)
+        self.assertEqual(results.run["schema_version"], 3)
+        self.assertEqual(results.matrix["schema_version"], 2)
+        self.assertEqual(results.matrix["platforms"]["linux-ubuntu-x64"]["CLI"],
+                         profiled_record("linux-ubuntu-x64")["profiles"]["xterm-256color"]["clients"]["CLI"]["user_agent"])
 
     def test_profile_schemas_accept_complete_run_and_reject_missing_context(self):
         results = matrix.publication_matrices(self.assemble())
@@ -135,11 +174,21 @@ class ProfileTests(unittest.TestCase):
             jsonschema.Draft202012Validator.check_schema(schema)
             validator = jsonschema.Draft202012Validator(schema)
             validator.validate(value)
+            missing_wsl = copy.deepcopy(value)
+            missing_wsl["platforms"]["linux-ubuntu-x64"]["profiles"]["WindowsTerminal"] = (
+                None if filename == "ua-matrix" else {"status": "unsupported", "reason": "launch failed"})
+            with self.assertRaises(jsonschema.ValidationError):
+                validator.validate(missing_wsl)
             for platform in PLATFORMS:
-                changed = copy.deepcopy(value)
-                del changed["platforms"][platform]["profiles"]["herdr"]
-                with self.subTest(filename=filename, platform=platform), self.assertRaises(jsonschema.ValidationError):
-                    validator.validate(changed)
+                for profile in terminals.PROFILES:
+                    changed = copy.deepcopy(value)
+                    del changed["platforms"][platform]["profiles"][profile]
+                    with self.subTest(filename=filename, platform=platform, profile=profile), self.assertRaises(jsonschema.ValidationError):
+                        validator.validate(changed)
+            legacy = copy.deepcopy(value)
+            legacy["schema_version"] -= 1
+            with self.assertRaises(jsonschema.ValidationError):
+                validator.validate(legacy)
 
     def test_run_parser_rejects_hidden_metadata_and_returns_independent_context(self):
         original = self.assemble()
@@ -154,10 +203,14 @@ class ProfileTests(unittest.TestCase):
         from scripts.releases import release_body
         results = matrix.publication_matrices(self.assemble())
         body = release_body(results)
-        self.assertEqual(body.count("<code>"), 60)
-        self.assertEqual(body.count("| unsupported |"), 18)
-        self.assertIn("| windows-arm64 (WindowsTerminal) | CLI |", body)
-        self.assertIn("| linux-debian-x64 (vscode) | unsupported |", body)
+        self.assertEqual(body.count("<code>"), 64)
+        self.assertEqual(body.count("| unsupported |"), 16)
+        self.assertIn("| Platform | Profile | Client | User-Agent |", body)
+        self.assertIn("| windows-arm64 | WindowsTerminal | CLI |", body)
+        self.assertIn("| linux-ubuntu-x64 | WindowsTerminal | CLI |", body)
+        self.assertIn("| linux-ubuntu-arm64 | WindowsTerminal | Exec |", body)
+        self.assertIn("| linux-debian-x64 | xterm-256color | CLI |", body)
+        self.assertIn("| linux-debian-x64 | vscode | unsupported |", body)
 
 
 if __name__ == "__main__":

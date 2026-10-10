@@ -38,7 +38,7 @@ import zipfile
 
 
 PROFILES = ("xterm-256color", "WindowsTerminal", "vscode", "herdr")
-APPLICATIONS = PROFILES[1:]
+APPLICATIONS = ("WindowsTerminal", "vscode", "herdr")
 LAUNCH_METHODS = {
     "xterm-256color": "controlled-environment",
     "WindowsTerminal": "windows-terminal",
@@ -155,8 +155,16 @@ def native_target(platform):
     return f"{platform.split('-')[0]}-{platform.rsplit('-', 1)[1]}"
 
 
+def uses_wsl(profile, platform):
+    return profile == "WindowsTerminal" and platform.startswith("linux-ubuntu-")
+
+
 def unsupported_reason(profile, platform, release, container_image, runner_image):
     target = native_target(platform)
+    if release is None:
+        if profile != "xterm-256color":
+            raise ValueError(f"{profile}: missing terminal release")
+        return None
     if profile == "WindowsTerminal" and not platform.startswith("windows-"):
         return "Windows Terminal has no native release for this operating system."
     if profile == "vscode":
@@ -358,13 +366,31 @@ def run_in_terminal(profile, release, binary, platform, sampling_command, direct
 
 
 def collect_profiles(codex_binary, platform, releases, directory):
-    """Capture both native Codex clients in each supported terminal application."""
+    """Capture both Codex clients for each requested terminal profile."""
     observations = {}
-    for profile, release in releases.items():
+    for profile in PROFILES:
+        if profile in APPLICATIONS and profile not in releases:
+            continue
+        if uses_wsl(profile, platform):
+            # The matching Windows job supplies this Profile through real WSL.
+            continue
+        release = releases.get(profile)
         reason = unsupported_reason(profile, platform, release, os.environ.get("COLLECT_CONTAINER_IMAGE", ""),
                                     os.environ.get("ImageOS", ""))
         if reason:
             observations[profile] = {"status": "unsupported", "reason": reason}
+            continue
+        if release is None:
+            try:
+                from .collect import TERMINAL, capture_client
+            except ImportError:
+                from collect import TERMINAL, capture_client
+            captures = {mode: capture_client(codex_binary, mode, directory / (profile + "-" + mode.lower()))
+                        for mode in ("CLI", "Exec")}
+            observations[profile] = {"status": "collected", "application": None,
+                "launch_method": LAUNCH_METHODS[profile], "terminal": dict(TERMINAL), "tty": None,
+                "clients": {mode: {"user_agent": capture["user_agent"], "method": "http-capture", "http_capture": capture}
+                            for mode, capture in captures.items()}}
             continue
         binary = install(profile, release, platform, directory / (profile + "-app"))
         output = directory / (profile + "-clients.json")

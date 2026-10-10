@@ -14,7 +14,8 @@
     "schema_version": {
       "enum": [
         2,
-        3
+        3,
+        4
       ],
       "type": "integer"
     },
@@ -624,7 +625,7 @@
       "type": "string",
       "pattern": "^codex_exec/(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*) \\([^;()\\u0000-\\u001f\\u007f]+; [^;()\\u0000-\\u001f\\u007f]+\\) xterm-256color \\(codex_exec; (?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\)$"
     },
-    "platform": {
+    "legacyPlatform": {
       "type": "object",
       "required": [
         "target",
@@ -1083,6 +1084,219 @@
         }
       },
       "additionalProperties": false
+    },
+    "platform": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/legacyPlatform"
+        },
+        {
+          "$ref": "#/$defs/profilePlatform"
+        }
+      ]
+    },
+    "controlledProfile": {
+      "type": "object",
+      "required": [
+        "status",
+        "application",
+        "launch_method",
+        "terminal",
+        "tty",
+        "clients"
+      ],
+      "properties": {
+        "status": {
+          "const": "collected"
+        },
+        "application": {
+          "type": "null"
+        },
+        "launch_method": {
+          "const": "controlled-environment"
+        },
+        "terminal": {
+          "$ref": "#/$defs/legacyPlatform/properties/terminal"
+        },
+        "tty": {
+          "type": "null"
+        },
+        "clients": {
+          "$ref": "#/$defs/nativeClients"
+        }
+      },
+      "additionalProperties": false
+    },
+    "profilePlatform": {
+      "type": "object",
+      "required": [
+        "target",
+        "source_url",
+        "collected_at",
+        "os",
+        "runner",
+        "profiles"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/legacyPlatform/properties/target"
+        },
+        "source_url": {
+          "$ref": "#/$defs/legacyPlatform/properties/source_url"
+        },
+        "collected_at": {
+          "$ref": "#/$defs/legacyPlatform/properties/collected_at"
+        },
+        "os": {
+          "$ref": "#/$defs/legacyPlatform/properties/os"
+        },
+        "runner": {
+          "$ref": "#/$defs/legacyPlatform/properties/runner"
+        },
+        "profiles": {
+          "type": "object",
+          "required": [
+            "xterm-256color",
+            "WindowsTerminal",
+            "vscode",
+            "herdr"
+          ],
+          "properties": {
+            "xterm-256color": {
+              "$ref": "#/$defs/controlledProfile"
+            },
+            "WindowsTerminal": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/legacyPlatform/properties/profiles/properties/WindowsTerminal"
+                },
+                {
+                  "$ref": "#/$defs/wslProfile"
+                }
+              ]
+            },
+            "vscode": {
+              "$ref": "#/$defs/legacyPlatform/properties/profiles/properties/vscode"
+            },
+            "herdr": {
+              "$ref": "#/$defs/legacyPlatform/properties/profiles/properties/herdr"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "wslProfile": {
+      "type": "object",
+      "required": [
+        "status",
+        "application",
+        "launch_method",
+        "terminal",
+        "tty",
+        "clients",
+        "runtime"
+      ],
+      "properties": {
+        "status": {
+          "const": "collected"
+        },
+        "application": {
+          "type": "object",
+          "required": [
+            "version",
+            "source_url"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+){3}$"
+            },
+            "source_url": {
+              "type": "string",
+              "pattern": "^https://"
+            }
+          },
+          "additionalProperties": false
+        },
+        "launch_method": {
+          "const": "windows-terminal-wsl"
+        },
+        "terminal": {
+          "type": "object",
+          "required": [
+            "WT_SESSION",
+            "WSL_DISTRO_NAME"
+          ],
+          "properties": {
+            "WT_SESSION": {
+              "$ref": "#/$defs/nonemptyString"
+            },
+            "WSL_DISTRO_NAME": {
+              "$ref": "#/$defs/nonemptyString"
+            }
+          },
+          "patternProperties": {
+            "^(?:TERM.*|WT_.*|WSL_.*)$": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "tty": {
+          "const": [
+            true,
+            true,
+            true
+          ],
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "clients": {
+          "$ref": "#/$defs/nativeClients"
+        },
+        "runtime": {
+          "type": "object",
+          "required": [
+            "os",
+            "runner"
+          ],
+          "properties": {
+            "os": {
+              "$ref": "#/$defs/legacyPlatform/properties/os",
+              "properties": {
+                "system": {
+                  "const": "Linux"
+                },
+                "distribution": {
+                  "$ref": "#/$defs/distribution",
+                  "properties": {
+                    "id": {
+                      "const": "ubuntu"
+                    },
+                    "version_id": {
+                      "const": "24.04"
+                    }
+                  }
+                }
+              }
+            },
+            "runner": {
+              "$ref": "#/$defs/legacyPlatform/properties/runner",
+              "properties": {
+                "container_image": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "allOf": [
@@ -1090,7 +1304,10 @@
       "if": {
         "properties": {
           "schema_version": {
-            "const": 3
+            "enum": [
+              3,
+              4
+            ]
           }
         }
       },
@@ -1260,6 +1477,107 @@
           "required": [
             "terminal_releases"
           ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": 4
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "platforms": {
+            "additionalProperties": {
+              "$ref": "#/$defs/profilePlatform"
+            },
+            "allOf": [
+              {
+                "patternProperties": {
+                  "^linux-ubuntu-": {
+                    "properties": {
+                      "profiles": {
+                        "properties": {
+                          "WindowsTerminal": {
+                            "$ref": "#/$defs/wslProfile"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "^(?:linux-(?:debian|fedora|alpine)|macos|windows)-": {
+                    "properties": {
+                      "profiles": {
+                        "properties": {
+                          "WindowsTerminal": {
+                            "$ref": "#/$defs/legacyPlatform/properties/profiles/properties/WindowsTerminal"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "^linux-ubuntu-x64$": {
+                    "properties": {
+                      "profiles": {
+                        "properties": {
+                          "WindowsTerminal": {
+                            "properties": {
+                              "runtime": {
+                                "properties": {
+                                  "os": {
+                                    "properties": {
+                                      "machine": {
+                                        "pattern": "^(?:[Xx]86_64|[Aa][Mm][Dd]64)$"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "^linux-ubuntu-arm64$": {
+                    "properties": {
+                      "profiles": {
+                        "properties": {
+                          "WindowsTerminal": {
+                            "properties": {
+                              "runtime": {
+                                "properties": {
+                                  "os": {
+                                    "properties": {
+                                      "machine": {
+                                        "pattern": "^(?:[Aa][Aa][Rr][Cc][Hh]64|[Aa][Rr][Mm]64)$"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "platforms": {
+            "additionalProperties": {
+              "$ref": "#/$defs/legacyPlatform"
+            }
+          }
         }
       }
     }

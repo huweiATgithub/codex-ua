@@ -87,7 +87,7 @@ def download_binary(url, platform_name, directory):
 
 
 def child_environment(directory, *, native_terminal=False):
-    # Baseline sampling starts clean. Native applications were isolated before
+    # Controlled-environment profiles start clean. Native applications were isolated before
     # launch, so their complete terminal environment must reach Codex.
     allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SYSTEMDRIVE"}
     env = dict(os.environ) if native_terminal else {name: value for name, value in os.environ.items() if name.upper() in allowed}
@@ -375,16 +375,36 @@ def capture_client(binary, mode, directory, *, native_terminal=False):
     return capture
 
 
+def os_info():
+    return {
+        "system": platform.system(), "release": platform.release(),
+        "version": platform.version(), "machine": platform.machine(),
+        "distribution": {
+            key.lower(): platform.freedesktop_os_release()[key]
+            for key in ("ID", "VERSION_ID", "PRETTY_NAME")
+        } if platform.system() == "Linux" else None,
+    }
+
+
+def runner_info():
+    return {
+        "name": os.environ.get("RUNNER_NAME", "local"),
+        "image": os.environ.get("ImageOS", "unknown"),
+        "image_version": os.environ.get("ImageVersion", "unknown"),
+        "container_image": os.environ.get("COLLECT_CONTAINER_IMAGE") or None,
+    }
+
+
 def collect(version, platform_name, supplied_binary=None, terminal_releases=None):
     actual = native_platform()
     if platform_name != actual:
         raise RuntimeError(f"requested {platform_name}, but this process runs on {actual}")
-    selected = None
+    try:
+        from .terminals import collect_profiles, parse_releases
+    except ImportError:
+        from terminals import collect_profiles, parse_releases
+    selected = {}
     if terminal_releases is not None:
-        try:
-            from .terminals import collect_profiles, parse_releases
-        except ImportError:
-            from terminals import collect_profiles, parse_releases
         selected = parse_releases(terminal_releases)
     url = source_url(version, platform_name)
     with tempfile.TemporaryDirectory(prefix="codex-ua-") as temporary:
@@ -398,42 +418,19 @@ def collect(version, platform_name, supplied_binary=None, terminal_releases=None
         )
         if result.stdout.strip() != f"codex-cli {version}":
             raise RuntimeError(f"binary version mismatch: requested {version}, received {result.stdout.strip()!r}")
-        captures = {
-            mode: capture_client(binary, mode, directory / mode.lower())
-            for mode in ("CLI", "Exec")
-        }
-        profiles = None
-        if selected is not None:
-            profiles = collect_profiles(binary, platform_name, selected, directory)
+        profiles = collect_profiles(binary, platform_name, selected, directory)
     result = {
-        "schema_version": 3 if profiles is not None else 2,
+        "schema_version": 4,
         "codex_version": version,
         "platform": platform_name,
         "target": TARGETS[platform_name],
         "source_url": url,
         "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "os": {
-            "system": platform.system(), "release": platform.release(),
-            "version": platform.version(), "machine": platform.machine(),
-            "distribution": {
-                key.lower(): platform.freedesktop_os_release()[key]
-                for key in ("ID", "VERSION_ID", "PRETTY_NAME")
-            } if platform_name.startswith("linux-") else None,
-        },
-        "runner": {
-            "name": os.environ.get("RUNNER_NAME", "local"),
-            "image": os.environ.get("ImageOS", "unknown"),
-            "image_version": os.environ.get("ImageVersion", "unknown"),
-            "container_image": os.environ.get("COLLECT_CONTAINER_IMAGE") or None,
-        },
-        "terminal": TERMINAL,
-        "clients": {
-            mode: {"user_agent": capture["user_agent"], "method": "http-capture", "http_capture": capture}
-            for mode, capture in captures.items()
-        },
+        "os": os_info(),
+        "runner": runner_info(),
+        "terminal_releases": {name: release.to_dict() for name, release in selected.items()},
+        "profiles": profiles,
     }
-    if profiles is not None:
-        result.update({"terminal_releases": {name: release.to_dict() for name, release in selected.items()}, "profiles": profiles})
     return result
 
 

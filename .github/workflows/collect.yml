@@ -151,10 +151,44 @@ jobs:
                 --terminal-releases /workspace/.local/terminal-releases.json \
                 --output "/output/$COLLECT_PLATFORM.json"
             '
+      - name: Install Ubuntu in WSL
+        if: startsWith(matrix.platform, 'windows-')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ('${{ matrix.platform }}' -eq 'windows-arm64') {
+            Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -NoRestart
+            $release = gh api repos/microsoft/WSL/releases/latest | ConvertFrom-Json
+            $assets = @($release.assets | Where-Object name -Match '^wsl\..*\.arm64\.msi$')
+            if ($assets.Count -ne 1) { throw "Expected one official ARM64 WSL installer" }
+            $installer = Join-Path $env:RUNNER_TEMP wsl.arm64.msi
+            Invoke-WebRequest $assets[0].browser_download_url -OutFile $installer
+            $install = Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait -PassThru
+            if ($install.ExitCode -notin 0,3010) { throw "WSL installer failed: $($install.ExitCode)" }
+          }
+          wsl --install --distribution Ubuntu-24.04 --web-download --no-launch --version 1
+          if ($LASTEXITCODE -ne 0) { throw "Ubuntu WSL installation failed: $LASTEXITCODE" }
+          wsl --distribution Ubuntu-24.04 --user root --exec sh -ec 'apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates'
+          if ($LASTEXITCODE -ne 0) { throw "Ubuntu WSL preparation failed: $LASTEXITCODE" }
+      - name: Collect Ubuntu WindowsTerminal Profile through WSL
+        if: startsWith(matrix.platform, 'windows-')
+        env:
+          CODEX_VERSION: ${{ needs.discover.outputs.version }}
+          COLLECT_PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: >-
+          python scripts/wsl.py collect
+          --version "$CODEX_VERSION"
+          --platform "linux-ubuntu-${COLLECT_PLATFORM#windows-}"
+          --terminal-releases .local/terminal-releases.json
+          --output ".local/wsl-linux-ubuntu-${COLLECT_PLATFORM#windows-}.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: platform-${{ matrix.platform }}
-          path: .local/${{ matrix.platform }}.json
+          path: |
+            .local/${{ matrix.platform }}.json
+            .local/wsl-linux-ubuntu-*.json
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 7

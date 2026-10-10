@@ -12,7 +12,8 @@
     "schema_version": {
       "enum": [
         1,
-        2
+        2,
+        3
       ],
       "type": "integer"
     },
@@ -87,7 +88,7 @@
       "type": "string",
       "pattern": "^codex_exec/(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*) \\([^;()\\u0000-\\u001f\\u007f]+; [^;()\\u0000-\\u001f\\u007f]+\\) xterm-256color \\(codex_exec; (?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\)$"
     },
-    "clients": {
+    "legacyClients": {
       "type": "object",
       "required": [
         "CLI",
@@ -167,6 +168,70 @@
         }
       },
       "additionalProperties": false
+    },
+    "clients": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/legacyClients"
+        },
+        {
+          "$ref": "#/$defs/profilePlatform"
+        }
+      ]
+    },
+    "profilePlatform": {
+      "type": "object",
+      "required": [
+        "profiles"
+      ],
+      "properties": {
+        "profiles": {
+          "type": "object",
+          "required": [
+            "xterm-256color",
+            "WindowsTerminal",
+            "vscode",
+            "herdr"
+          ],
+          "properties": {
+            "xterm-256color": {
+              "$ref": "#/$defs/nativeClients"
+            },
+            "WindowsTerminal": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/nativeClients"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "vscode": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/nativeClients"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "herdr": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/nativeClients"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "allOf": [
@@ -174,7 +239,10 @@
       "if": {
         "properties": {
           "schema_version": {
-            "const": 2
+            "enum": [
+              2,
+              3
+            ]
           }
         }
       },
@@ -334,6 +402,50 @@
                   ]
                 }
               }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": 3
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "platforms": {
+            "additionalProperties": {
+              "$ref": "#/$defs/profilePlatform"
+            },
+            "allOf": [
+              {
+                "patternProperties": {
+                  "^linux-ubuntu-": {
+                    "properties": {
+                      "profiles": {
+                        "properties": {
+                          "WindowsTerminal": {
+                            "$ref": "#/$defs/nativeClients"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "platforms": {
+            "additionalProperties": {
+              "$ref": "#/$defs/legacyClients"
             }
           }
         }

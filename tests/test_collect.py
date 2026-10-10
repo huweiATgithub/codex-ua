@@ -93,10 +93,13 @@ class CollectorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             result = collect.collect("0.156.1", native_platform(), self.fake_client(directory))
-        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["schema_version"], 4)
+        self.assertNotIn("clients", result)
+        self.assertNotIn("terminal", result)
+        self.assertEqual(set(result["profiles"]), {"xterm-256color"})
         for mode, identity in (("CLI", "codex-tui"), ("Exec", "codex_exec")):
             ua = f"{identity}/0.156.1 (Measured OS 7; x86_64) xterm-256color ({identity}; 0.156.1)"
-            self.assertEqual(result["clients"][mode], {
+            self.assertEqual(result["profiles"]["xterm-256color"]["clients"][mode], {
                 "user_agent": ua, "method": "http-capture",
                 "http_capture": {"user_agent": ua, "originator": identity},
             })

@@ -233,11 +233,12 @@ class PublicationTests(unittest.TestCase):
     def assert_release_body(self, body, matrix):
         self.assertIn(f"CLI User-Agent matrix for Codex {matrix['codex_version']}.", body)
         self.assertIn(f"Collector commit: `{COMMIT}`.", body)
-        self.assertIn("| Platform | Client | User-Agent |", body)
+        self.assertIn("| Platform | Profile | Client | User-Agent |", body)
         rows = [line.split(" | ") for line in body.splitlines() if "<code>" in line]
         self.assertEqual(len(rows), 24)
         observed = {}
-        for platform, mode, cell in rows:
+        for platform, profile, mode, cell in rows:
+            self.assertEqual(profile, "xterm-256color")
             self.assertTrue(cell.startswith("<code>") and cell.endswith("</code> |"))
             observed.setdefault(platform.removeprefix("| "), {})[mode] = unescape(
                 cell.removeprefix("<code>").removesuffix("</code> |")

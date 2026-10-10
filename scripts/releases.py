@@ -189,22 +189,21 @@ def release_body(matrices: PublicationMatrices) -> str:
         "",
         "These samples reflect the recorded collection environments.",
         "",
-        "| Platform | Client | User-Agent |",
-        "| --- | --- | --- |",
+        "| Platform | Profile | Client | User-Agent |",
+        "| --- | --- | --- | --- |",
     ]
     for platform, clients in matrices.matrix["platforms"].items():
-        for mode in ("CLI", "Exec"):
-            user_agent = clients[mode]
-            cell = escape(user_agent).replace("|", "&#124;")
-            lines.append(f"| {platform} | {mode} | <code>{cell}</code> |")
-        for profile, observation in clients.get("profiles", {}).items():
+        profiles = clients.get("profiles", {})
+        if matrices.matrix["schema_version"] < 3:
+            profiles = {"xterm-256color": {mode: clients[mode] for mode in ("CLI", "Exec")}, **profiles}
+        for profile, observation in profiles.items():
             if observation is None:
                 reason = matrices.run["platforms"][platform]["profiles"][profile]["reason"]
-                lines.append(f"| {platform} ({profile}) | unsupported | {escape(reason).replace('|', '&#124;')} |")
+                lines.append(f"| {platform} | {profile} | unsupported | {escape(reason).replace('|', '&#124;')} |")
             else:
                 for mode, user_agent in observation.items():
                     cell = escape(user_agent).replace("|", "&#124;")
-                    lines.append(f"| {platform} ({profile}) | {mode} | <code>{cell}</code> |")
+                    lines.append(f"| {platform} | {profile} | {mode} | <code>{cell}</code> |")
     lines.extend(["", f"Collector commit: `{matrices.run['collector']['commit']}`.", ""])
     return "\n".join(lines)
 

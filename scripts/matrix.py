@@ -11,9 +11,9 @@ from pathlib import Path
 import re
 
 try:
-    from .terminals import APPLICATIONS, LAUNCH_METHODS, TerminalRelease, native_target, parse_releases, unsupported_reason
+    from .terminals import APPLICATIONS, PROFILES, LAUNCH_METHODS, TerminalRelease, native_target, parse_releases, unsupported_reason, uses_wsl
 except ImportError:
-    from terminals import APPLICATIONS, LAUNCH_METHODS, TerminalRelease, native_target, parse_releases, unsupported_reason
+    from terminals import APPLICATIONS, PROFILES, LAUNCH_METHODS, TerminalRelease, native_target, parse_releases, unsupported_reason, uses_wsl
 
 
 TARGETS = {
@@ -169,7 +169,7 @@ class ClientObservation:
     http_capture: HttpCapture
 
     @classmethod
-    def parse(cls, value: object, mode: str, version: StableVersion, terminal: str | None = "xterm-256color") -> ClientObservation:
+    def parse(cls, value: object, mode: str, version: StableVersion, terminal: str | None = None) -> ClientObservation:
         fields = {"user_agent", "method", "http_capture"}
         values = object_fields(value, fields, f"clients.{mode}")
         if values["method"] != "http-capture":
@@ -204,25 +204,21 @@ class ClientObservation:
 
 
 @dataclass(frozen=True)
-class PlatformObservation:
+class PlatformContext:
     platform: str
     target: str
     source_url: str
     collected_at: str
     os: OSInfo
     runner: RunnerInfo
-    interactive: ClientObservation
-    exec: ClientObservation
 
     @classmethod
-    def parse(cls, value: object, version: StableVersion) -> PlatformObservation:
+    def parse(cls, value: object, version: StableVersion) -> PlatformContext:
         values = object_fields(
             value,
-            {"schema_version", "codex_version", "platform", "target", "source_url", "collected_at", "os", "runner", "terminal", "clients"},
-            "platform record",
+            {"codex_version", "platform", "target", "source_url", "collected_at", "os", "runner"},
+            "platform context",
         )
-        if type(values["schema_version"]) is not int or values["schema_version"] != 2:
-            raise MatrixError("schema_version: expected 2")
         if StableVersion.parse(values["codex_version"]) != version:
             raise MatrixError("codex_version: differs from requested collection version")
         platform = nonempty_string(values["platform"], "platform")
@@ -247,9 +243,6 @@ class PlatformObservation:
             raise MatrixError("collected_at: invalid timestamp") from error
         if timestamp.utcoffset() != timedelta(0):
             raise MatrixError("collected_at: expected UTC")
-        if values["terminal"] != {"TERM": "xterm-256color"}:
-            raise MatrixError("terminal: expected only TERM=xterm-256color")
-        clients = object_fields(values["clients"], {"CLI", "Exec"}, "clients")
         return cls(
             platform,
             target,
@@ -257,8 +250,6 @@ class PlatformObservation:
             collected_at,
             OSInfo.parse(values["os"], platform),
             RunnerInfo.parse(values["runner"]),
-            ClientObservation.parse(clients["CLI"], "CLI", version),
-            ClientObservation.parse(clients["Exec"], "Exec", version),
         )
 
     def to_dict(self) -> dict:
@@ -268,9 +259,37 @@ class PlatformObservation:
             "collected_at": self.collected_at,
             "os": asdict(self.os),
             "runner": asdict(self.runner),
-            "terminal": {"TERM": "xterm-256color"},
-            "clients": {"CLI": self.interactive.to_dict(), "Exec": self.exec.to_dict()},
         }
+
+
+@dataclass(frozen=True)
+class PlatformObservation:
+    """Read the platform-level clients in legacy schema 2 records."""
+
+    context: PlatformContext
+    interactive: ClientObservation
+    exec: ClientObservation
+
+    @property
+    def platform(self) -> str:
+        return self.context.platform
+
+    @classmethod
+    def parse(cls, value: object, version: StableVersion) -> PlatformObservation:
+        fields = {"codex_version", "platform", "target", "source_url", "collected_at", "os", "runner"}
+        values = object_fields(value, fields | {"schema_version", "terminal", "clients"}, "platform record")
+        if type(values["schema_version"]) is not int or values["schema_version"] != 2:
+            raise MatrixError("schema_version: expected 2")
+        if values["terminal"] != {"TERM": "xterm-256color"}:
+            raise MatrixError("terminal: expected only TERM=xterm-256color")
+        clients = object_fields(values["clients"], {"CLI", "Exec"}, "clients")
+        return cls(PlatformContext.parse({key: values[key] for key in fields}, version),
+                   ClientObservation.parse(clients["CLI"], "CLI", version, "xterm-256color"),
+                   ClientObservation.parse(clients["Exec"], "Exec", version, "xterm-256color"))
+
+    def to_dict(self) -> dict:
+        return {**self.context.to_dict(), "terminal": {"TERM": "xterm-256color"},
+                "clients": {"CLI": self.interactive.to_dict(), "Exec": self.exec.to_dict()}}
 
 
 @dataclass(frozen=True)
@@ -284,73 +303,122 @@ class UnsupportedProfile:
 @dataclass(frozen=True)
 class CollectedProfile:
     profile: str
-    release: TerminalRelease
-    target: str
+    application: dict[str, str] | None
     terminal: dict[str, str]
+    tty: tuple[bool, bool, bool] | None
     interactive: ClientObservation
     exec: ClientObservation
+    runtime: tuple[OSInfo, RunnerInfo] | None = None
+
+    @classmethod
+    def parse(cls, value: object, profile: str, release: TerminalRelease | None,
+              context: PlatformContext, version: StableVersion) -> CollectedProfile:
+        label = f"profiles.{profile}"
+        wsl = uses_wsl(profile, context.platform)
+        fields = {"status", "application", "launch_method", "terminal", "tty", "clients"}
+        values = object_fields(value, fields | ({"runtime"} if wsl else set()), label)
+        method = "windows-terminal-wsl" if wsl else LAUNCH_METHODS[profile]
+        if values["status"] != "collected" or values["launch_method"] != method:
+            raise MatrixError(f"{label}: supported combinations require their profile's collection method")
+        application = None
+        tty = None
+        runtime = None
+        if release is not None:
+            target = "windows-" + context.platform.rsplit("-", 1)[1] if wsl else native_target(context.platform)
+            if target not in release.assets:
+                raise MatrixError(f"{label}.application: missing the required terminal binary for {target}")
+            application = {"version": release.version, "source_url": release.assets[target]}
+            if values["application"] != application:
+                raise MatrixError(f"{label}.application: differs from the fixed official release and native target")
+            if values["tty"] != [True, True, True] or not all(type(item) is bool for item in values["tty"]):
+                raise MatrixError(f"{label}.tty: expected a real terminal PTY")
+            tty = (True, True, True)
+            if wsl:
+                metadata = object_fields(values["runtime"], {"os", "runner"}, label + ".runtime")
+                guest = OSInfo.parse(metadata["os"], context.platform)
+                host = RunnerInfo.parse(metadata["runner"])
+                if guest.distribution.version_id != "24.04" or host.container_image is not None:
+                    raise MatrixError(f"{label}.runtime: expected Ubuntu 24.04 in WSL on a Windows host")
+                runtime = (guest, host)
+        elif values["application"] is not None or values["tty"] is not None:
+            raise MatrixError(f"{label}: controlled environment has no application or application-owned PTY")
+        terminal = values["terminal"]
+        if not isinstance(terminal, dict) or not terminal or not all(
+            isinstance(key, str) and key.startswith(("TERM", "WT_", "HERDR_", "WSL_")) and isinstance(item, str)
+            for key, item in terminal.items()
+        ) or (release is None and terminal != {"TERM": "xterm-256color"}):
+            raise MatrixError(f"{label}.terminal: expected the profile's terminal context")
+        if wsl and (not terminal.get("WT_SESSION") or not terminal.get("WSL_DISTRO_NAME")):
+            raise MatrixError(f"{label}.terminal: missing the real Windows Terminal and WSL session")
+        clients = object_fields(values["clients"], {"CLI", "Exec"}, label + ".clients")
+        return cls(profile, application, dict(terminal), tty,
+                   ClientObservation.parse(clients["CLI"], "CLI", version),
+                   ClientObservation.parse(clients["Exec"], "Exec", version), runtime)
 
     def to_dict(self) -> dict:
-        return {
-            "status": "collected", "application": {"version": self.release.version, "source_url": self.release.assets[self.target]},
-            "launch_method": LAUNCH_METHODS[self.profile], "terminal": dict(self.terminal), "tty": [True, True, True],
+        value = {
+            "status": "collected", "application": dict(self.application) if self.application is not None else None,
+            "launch_method": "windows-terminal-wsl" if self.runtime is not None else LAUNCH_METHODS[self.profile], "terminal": dict(self.terminal),
+            "tty": list(self.tty) if self.tty is not None else None,
             "clients": {"CLI": self.interactive.to_dict(), "Exec": self.exec.to_dict()},
         }
+        if self.runtime is not None:
+            value["runtime"] = {"os": asdict(self.runtime[0]), "runner": asdict(self.runtime[1])}
+        return value
 
 
 @dataclass(frozen=True)
 class ProfiledPlatformObservation:
-    baseline: PlatformObservation
+    context: PlatformContext
     releases: dict[str, TerminalRelease]
     profiles: dict[str, CollectedProfile | UnsupportedProfile]
 
     @property
     def platform(self) -> str:
-        return self.baseline.platform
+        return self.context.platform
 
     @classmethod
     def parse(cls, value: object, version: StableVersion) -> ProfiledPlatformObservation:
-        fields = {"schema_version", "codex_version", "platform", "target", "source_url", "collected_at", "os", "runner", "terminal", "clients"}
-        values = object_fields(value, fields | {"terminal_releases", "profiles"}, "platform record")
-        if type(values["schema_version"]) is not int or values["schema_version"] != 3:
-            raise MatrixError("schema_version: expected 3")
-        baseline = PlatformObservation.parse({**{key: values[key] for key in fields}, "schema_version": 2}, version)
+        fields = {"codex_version", "platform", "target", "source_url", "collected_at", "os", "runner"}
+        legacy = isinstance(value, dict) and value.get("schema_version") == 3
+        extra = {"terminal", "clients"} if legacy else set()
+        values = object_fields(value, fields | extra | {"schema_version", "terminal_releases", "profiles"}, "platform record")
+        if type(values["schema_version"]) is not int or values["schema_version"] not in (3, 4):
+            raise MatrixError("schema_version: expected 3 or 4")
         selected = terminal_releases(values["terminal_releases"])
-        raw_profiles = object_fields(values["profiles"], set(APPLICATIONS), "profiles")
+        raw_profiles = object_fields(values["profiles"], set(APPLICATIONS if legacy else PROFILES), "profiles")
+        if legacy:
+            baseline = PlatformObservation.parse({**{key: values[key] for key in fields | extra}, "schema_version": 2}, version)
+            context = baseline.context
+            raw_profiles = {"xterm-256color": {"status": "collected", "application": None,
+                "launch_method": LAUNCH_METHODS["xterm-256color"], "terminal": {"TERM": "xterm-256color"}, "tty": None,
+                "clients": {"CLI": baseline.interactive.to_dict(), "Exec": baseline.exec.to_dict()}}, **raw_profiles}
+        else:
+            context = PlatformContext.parse({key: values[key] for key in fields}, version)
         profiles = {}
-        for profile in APPLICATIONS:
-            release = selected[profile]
-            reason = unsupported_reason(profile, baseline.platform, release, baseline.runner.container_image, baseline.runner.image)
+        for profile in PROFILES:
+            release = selected.get(profile)
+            reason = None if not legacy and uses_wsl(profile, context.platform) else unsupported_reason(
+                profile, context.platform, release, context.runner.container_image, context.runner.image)
             raw = raw_profiles[profile]
-            context = f"profiles.{profile}"
+            label = f"profiles.{profile}"
             if reason:
-                unsupported = object_fields(raw, {"status", "reason"}, context)
+                unsupported = object_fields(raw, {"status", "reason"}, label)
                 if unsupported != {"status": "unsupported", "reason": reason}:
-                    raise MatrixError(f"{context}: expected unsupported with the native support reason")
+                    raise MatrixError(f"{label}: expected unsupported with the native support reason")
                 profiles[profile] = UnsupportedProfile(reason)
                 continue
-            collected = object_fields(raw, {"status", "application", "launch_method", "terminal", "tty", "clients"}, context)
-            if collected["status"] != "collected" or collected["launch_method"] != LAUNCH_METHODS[profile]:
-                raise MatrixError(f"{context}: supported combinations require native collection")
-            target = native_target(baseline.platform)
-            if collected["application"] != {"version": release.version, "source_url": release.assets[target]}:
-                raise MatrixError(f"{context}.application: differs from the fixed official release and native target")
-            if collected["tty"] != [True, True, True] or not all(type(value) is bool for value in collected["tty"]):
-                raise MatrixError(f"{context}.tty: expected a real terminal PTY")
-            terminal = collected["terminal"]
-            if not isinstance(terminal, dict) or not terminal or not all(
-                isinstance(key, str) and key.startswith(("TERM", "WT_", "HERDR_")) and isinstance(value, str)
-                for key, value in terminal.items()
-            ):
-                raise MatrixError(f"{context}.terminal: expected the application-generated terminal context")
-            clients = object_fields(collected["clients"], {"CLI", "Exec"}, context + ".clients")
-            profiles[profile] = CollectedProfile(profile, release, target, dict(terminal),
-                ClientObservation.parse(clients["CLI"], "CLI", version, terminal=None),
-                ClientObservation.parse(clients["Exec"], "Exec", version, terminal=None))
-        return cls(baseline, selected, profiles)
+            profiles[profile] = CollectedProfile.parse(raw, profile, release, context, version)
+        return cls(context, selected, profiles)
 
     def to_dict(self) -> dict:
-        return {**self.baseline.to_dict(), "profiles": {name: value.to_dict() for name, value in self.profiles.items()}}
+        return {**self.context.to_dict(), "profiles": {name: value.to_dict() for name, value in self.profiles.items()}}
+
+    def legacy_dict(self) -> dict:
+        """Preserve the shape of previously published schema 3 run assets."""
+        profiles = {name: value.to_dict() for name, value in self.profiles.items()}
+        baseline = profiles.pop("xterm-256color")
+        return {**self.context.to_dict(), "terminal": baseline["terminal"], "clients": baseline["clients"], "profiles": profiles}
 
 
 def unique_object(pairs: list[tuple[str, object]]) -> dict:
@@ -363,10 +431,10 @@ def unique_object(pairs: list[tuple[str, object]]) -> dict:
 
 
 def parse_run_matrix(value: object) -> dict:
-    if isinstance(value, dict) and value.get("schema_version") == 3:
+    if isinstance(value, dict) and value.get("schema_version") in (3, 4):
         values = object_fields(value, {"schema_version", "codex_version", "upstream_release", "collector", "platforms", "terminal_releases"}, "matrix")
         if type(values["schema_version"]) is not int:
-            raise MatrixError("schema_version: expected 3")
+            raise MatrixError("schema_version: expected 3 or 4")
         version = StableVersion.parse(values["codex_version"])
         if values["upstream_release"] != version.upstream_release:
             raise MatrixError("upstream_release: differs from the Codex version's official release URL")
@@ -378,12 +446,13 @@ def parse_run_matrix(value: object) -> dict:
         for platform, record in raw_platforms.items():
             if not isinstance(record, dict):
                 raise MatrixError(f"platforms.{platform}: expected an object")
-            observation = ProfiledPlatformObservation.parse({**record, "schema_version": 3, "codex_version": version.value,
+            observation = ProfiledPlatformObservation.parse({**record, "schema_version": values["schema_version"], "codex_version": version.value,
                 "platform": platform, "terminal_releases": snapshot}, version)
-            if set(record) != set(observation.to_dict()):
+            parsed = observation.legacy_dict() if values["schema_version"] == 3 else observation.to_dict()
+            if set(record) != set(parsed):
                 raise MatrixError(f"platforms.{platform}: unexpected fields")
-            platforms[platform] = observation.to_dict()
-        return {"schema_version": 3, "codex_version": version.value, "upstream_release": version.upstream_release,
+            platforms[platform] = parsed
+        return {"schema_version": values["schema_version"], "codex_version": version.value, "upstream_release": version.upstream_release,
                 "collector": asdict(collector), "terminal_releases": snapshot, "platforms": platforms}
     values = object_fields(
         value,
@@ -429,6 +498,15 @@ class PublicationMatrices:
 
 def publication_matrices(value: object) -> PublicationMatrices:
     run = parse_run_matrix(value)
+    if run["schema_version"] == 4:
+        return PublicationMatrices(run=run, matrix={
+            "schema_version": 3, "codex_version": run["codex_version"],
+            "platforms": {platform: {"profiles": {
+                profile: {mode: context["clients"][mode]["user_agent"] for mode in ("CLI", "Exec")}
+                if context["status"] == "collected" else None
+                for profile, context in observation["profiles"].items()
+            }} for platform, observation in run["platforms"].items()},
+        })
     matrix = {
         "schema_version": 2 if run["schema_version"] == 3 else 1,
         "codex_version": run["codex_version"],
@@ -458,14 +536,32 @@ def assemble_matrix(version: str, input_dir: Path, collector_commit: str, run_ur
     platforms: dict[str, PlatformObservation | ProfiledPlatformObservation] = {}
     selected = None
     record_schema = None
+    supplements = {path.name: path for path in input_dir.glob("wsl-*.json")}
     for path in sorted(input_dir.glob("*.json")):
+        if path.name.startswith("wsl-"):
+            continue
         try:
             value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
             schema = value.get("schema_version") if isinstance(value, dict) else None
+            if schema == 4 and uses_wsl("WindowsTerminal", str(value.get("platform", ""))):
+                supplement = supplements.pop("wsl-" + value["platform"] + ".json", None)
+                if supplement is not None:
+                    captured = object_fields(json.loads(supplement.read_text(encoding="utf-8"), object_pairs_hook=unique_object),
+                        {"schema_version", "codex_version", "platform", "terminal_releases", "profiles"}, supplement.name)
+                    if type(captured["schema_version"]) is not int or captured["schema_version"] != 4 or \
+                            captured["codex_version"] != requested_version.value or captured["platform"] != value["platform"]:
+                        raise MatrixError(f"{supplement.name}: WSL version and platform must match the Ubuntu record")
+                    if terminal_releases(captured["terminal_releases"]) != terminal_releases(value.get("terminal_releases")):
+                        raise MatrixError(f"{supplement.name}: terminal release snapshots differ")
+                    captured_profiles = object_fields(captured["profiles"], {"WindowsTerminal"}, supplement.name + ".profiles")
+                    native_profiles = value.get("profiles")
+                    if not isinstance(native_profiles, dict) or "WindowsTerminal" in native_profiles:
+                        raise MatrixError(f"{supplement.name}: duplicate or invalid Ubuntu WindowsTerminal Profile")
+                    value = {**value, "profiles": {**native_profiles, **captured_profiles}}
             if record_schema is not None and schema != record_schema:
                 raise MatrixError("mixed collection schemas; every platform must include the same profiles")
             record_schema = schema
-            if schema == 3:
+            if schema in (3, 4):
                 observation = ProfiledPlatformObservation.parse(value, requested_version)
                 if selected is not None and selected != observation.releases:
                     raise MatrixError("terminal_releases: platforms used different stable release snapshots")
@@ -477,15 +573,18 @@ def assemble_matrix(version: str, input_dir: Path, collector_commit: str, run_ur
             platforms[observation.platform] = observation
         except (OSError, UnicodeError, ValueError) as error:
             raise MatrixError(f"{path.name}: {error}") from error
+    if supplements:
+        raise MatrixError(f"unexpected WSL records: {', '.join(sorted(supplements))}")
     missing = TARGETS.keys() - platforms.keys()
     if missing:
         raise MatrixError(f"missing platforms: {', '.join(sorted(missing))}")
     result = {
-        "schema_version": 3 if selected is not None else 2,
+        "schema_version": record_schema,
         "codex_version": requested_version.value,
         "upstream_release": requested_version.upstream_release,
         "collector": asdict(collector),
-        "platforms": {platform: platforms[platform].to_dict() for platform in TARGETS},
+        "platforms": {platform: platforms[platform].legacy_dict() if record_schema == 3
+                      else platforms[platform].to_dict() for platform in TARGETS},
     }
     if selected is not None:
         result["terminal_releases"] = {name: release.to_dict() for name, release in selected.items()}
@@ -505,7 +604,7 @@ def main() -> None:
         results = publication_matrices(
             assemble_matrix(args.version, args.input_dir, args.collector_commit, args.run_url)
         )
-        if args.require_profiles and results.run["schema_version"] != 3:
+        if args.require_profiles and results.run["schema_version"] != 4:
             raise MatrixError("terminal profiles are required for every platform")
         args.output_dir.mkdir(parents=True, exist_ok=True)
         for filename, value in (("ua-matrix.json", results.matrix), ("ua-matrix.run.json", results.run)):

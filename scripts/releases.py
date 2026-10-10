@@ -271,7 +271,7 @@ def publish(github: GitHub, repository: str, requested: str, matrix: Path, run: 
         ])
         if downloaded != raw:
             raise ReleaseError(f"Draft {tag}: downloaded {name} differs from the collected results")
-    # Workflow concurrency serializes discover/collect/publish across all runs.
+    # The workflow's publish job serializes catalog and Latest updates across runs.
     completed = completed_catalog(github, repository)
     latest = all(version_key(version) > version_key(item.version) for item in completed.values())
     release = github.api(f"repos/{repository}/releases/{draft['id']}", {

@@ -160,8 +160,10 @@ gh workflow run collect.yml --repo huweiATgithub/codex-ua -f version=0.156.1
 ```
 
 Leave `version` blank to run discovery. Published UA releases provide completion
-state. Publication is serialized; drafts can be resumed, and backfills do not
-move the Latest selection to an older Codex version. The workflow never replaces
+state. Different versions collect concurrently; repeated requests for the same
+version queue. Publication is serialized with a queue for all pending versions;
+drafts can be resumed, and backfills do not move the Latest selection to an older
+Codex version. The workflow never replaces
 a published asset. A confirmed data error requires an explicitly authorized
 operator correction at the same version URL; leave GitHub release immutability
 disabled to permit that exceptional correction.

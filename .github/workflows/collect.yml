@@ -11,10 +11,11 @@ on:
         required: false
         type: string
 
-# Serialize discovery through publication so two runs cannot publish the same version.
+# Different versions collect concurrently; repeated requests for one version queue.
 concurrency:
-  group: ua-publication
+  group: ua-collection-${{ inputs.version || 'discovery' }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -196,6 +197,11 @@ jobs:
   publish:
     needs: [discover, collect]
     if: needs.discover.outputs.needed == 'true'
+    # Serialize catalog and Latest updates without dropping pending publications.
+    concurrency:
+      group: ua-publication
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

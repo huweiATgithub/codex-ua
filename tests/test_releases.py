@@ -41,6 +41,17 @@ def upstream_release(version, **updates):
     return release
 
 
+def release_summary(release):
+    return {key: release[key] for key in ("tag_name", "draft", "prerelease")}
+
+
+def summary_page(releases, next_cursor=None):
+    return {"data": {"repository": {"releases": {
+        "nodes": [release_summary(release) for release in releases],
+        "pageInfo": {"hasNextPage": next_cursor is not None, "endCursor": next_cursor},
+    }}}}
+
+
 def run_payload():
     platforms = {}
     for platform, target in releases.TARGETS.items():
@@ -88,59 +99,76 @@ def matrix_payload(run):
 class DiscoveryTests(unittest.TestCase):
     def github(self, catalog=(), upstream=()):
         github = Mock(spec=releases.GitHub)
-        github.releases.side_effect = lambda repository: iter(catalog if repository == REPOSITORY else upstream)
+        github.releases.return_value = catalog
+        github.upstream_release_summaries.return_value = [release_summary(release) for release in upstream]
+        if upstream:
+            by_tag = {release["tag_name"]: release for release in upstream}
+            github.by_tag.side_effect = lambda _, tag: by_tag.get(tag)
         return github
 
     def test_bootstrap_uses_current_latest(self):
         github = self.github()
-        github.api.side_effect = lambda endpoint: (
-            upstream_release("0.156.1") if endpoint.endswith("/latest") else None
-        )
+        github.read_api.return_value = upstream_release("0.156.1")
         result = releases.discover(github, REPOSITORY)
         self.assertEqual(result["version"], "0.156.1")
         self.assertTrue(result["needed"])
         github.releases.assert_called_once_with(REPOSITORY)
+        github.read_api.assert_called_once_with("repos/openai/codex/releases/latest")
 
-    def test_catchup_selects_oldest_missing_with_numeric_order(self):
-        github = self.github(
-            [catalog_release("0.9.0")],
-            [upstream_release("0.11.0"), upstream_release("0.12.0-alpha.1", prerelease=True),
-             upstream_release("0.10.0"), upstream_release("0.9.0")],
-        )
-        self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.10.0")
+    def test_catchup_selects_highest_numeric_version_across_pages(self):
+        github = releases.GitHub()
+        responses = [
+            [catalog_release("0.8.0")],
+            summary_page([upstream_release("0.9.0")], "second-page"),
+            summary_page([upstream_release("0.10.0"), upstream_release("0.8.0")], "older-history"),
+            upstream_release("0.10.0"),
+        ]
+        with patch.object(github, "api", side_effect=responses) as api:
+            self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.10.0")
+        first_page, second_page, detail = api.call_args_list[1:]
+        self.assertIsNone(first_page.args[1]["variables"]["after"])
+        self.assertEqual(second_page.args[1]["variables"]["after"], "second-page")
+        self.assertEqual(detail.args[0], "repos/openai/codex/releases/tags/rust-v0.10.0")
 
     def test_stop_at_seed_boundary(self):
-        github = self.github([catalog_release("0.9.0")])
+        newer = upstream_release("0.10.0")
+        seed = upstream_release("0.9.0")
+        github = self.github([catalog_release("0.9.0")], [newer, seed])
 
         def upstream():
-            yield upstream_release("0.10.0")
-            yield upstream_release("0.9.0")
+            yield release_summary(newer)
+            yield release_summary(seed)
             self.fail("Discovery fetched old releases beyond the catalog boundary")
 
-        github.releases.side_effect = lambda repository: (
-            iter([catalog_release("0.9.0")]) if repository == REPOSITORY else upstream()
-        )
+        github.upstream_release_summaries.side_effect = upstream
         self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.10.0")
 
-    def test_incomplete_older_release_does_not_block_newer_complete_release(self):
+    def test_incomplete_newest_release_is_reconsidered_on_the_next_run(self):
+        newest = upstream_release("0.11.0", assets=[])
         github = self.github(
             [catalog_release("0.9.0")],
-            [upstream_release("0.11.0"), upstream_release("0.10.0", assets=[]), upstream_release("0.9.0")],
+            [newest, upstream_release("0.10.0"), upstream_release("0.9.0")],
         )
+        self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.10.0")
+        self.assertEqual([item.args[1] for item in github.by_tag.call_args_list], ["rust-v0.11.0", "rust-v0.10.0"])
+        newest["assets"] = upstream_release("0.11.0")["assets"]
         self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.11.0")
-        # Once its binaries arrive, the older release remains eligible.
+
+    def test_catchup_skips_published_newer_versions_and_fills_older_gaps(self):
         github = self.github(
             [catalog_release("0.9.0"), catalog_release("0.11.0", published_at="2026-09-24T00:00:00Z")],
             [upstream_release("0.11.0"), upstream_release("0.10.0"), upstream_release("0.9.0")],
         )
         self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.10.0")
+        github.by_tag.assert_called_once_with("openai/codex", "rust-v0.10.0")
 
     def test_manual_backfill_does_not_lower_automatic_boundary(self):
         github = self.github(
             [catalog_release("0.7.0", published_at="2026-09-24T00:00:00Z"), catalog_release("0.9.0")],
-            [upstream_release("0.10.0"), upstream_release("0.9.0"), upstream_release("0.8.0"), upstream_release("0.7.0")],
+            [upstream_release("0.8.0"), upstream_release("0.9.0"), upstream_release("0.7.0")],
         )
-        self.assertEqual(releases.discover(github, REPOSITORY)["version"], "0.10.0")
+        self.assertFalse(releases.discover(github, REPOSITORY)["needed"])
+        github.by_tag.assert_not_called()
 
     def test_ignores_drafts_prereleases_and_other_tags(self):
         github = self.github(
@@ -149,7 +177,7 @@ class DiscoveryTests(unittest.TestCase):
              upstream_release("0.12.0", tag_name="other-v0.12.0"), upstream_release("0.9.0")],
         )
         self.assertFalse(releases.discover(github, REPOSITORY)["needed"])
-        github.api.assert_not_called()
+        github.by_tag.assert_not_called()
 
     def test_manual_published_version_is_skipped(self):
         github = self.github([catalog_release("0.10.0")])
@@ -177,8 +205,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_missing_upstream_binary_defers_automatic_but_errors_manual(self):
         github = self.github()
         incomplete = upstream_release("0.10.0", assets=[])
-        github.api.return_value = incomplete
-        github.api.side_effect = None
+        github.read_api.return_value = incomplete
         self.assertFalse(releases.discover(github, REPOSITORY)["needed"])
         github.by_tag.return_value = incomplete
         with self.assertRaisesRegex(releases.ReleaseError, "missing required binaries"):
@@ -416,6 +443,31 @@ class TransportTests(unittest.TestCase):
         with patch.object(github, "api", side_effect=[[{}] * 100, [{"id": 101}]]) as api:
             self.assertEqual(len(list(github.releases(REPOSITORY))), 101)
             self.assertIn("page=2", api.call_args.args[0])
+
+    def test_summary_page_recovers_from_http_504(self):
+        github = releases.GitHub()
+        release = upstream_release("0.10.0")
+        timeout = releases.GitHubError("Gateway Timeout (HTTP 504)", 504)
+        with patch.object(releases, "sleep") as delay, patch.object(
+            github, "api", side_effect=[timeout, timeout, summary_page([release])],
+        ) as api:
+            self.assertEqual(list(github.upstream_release_summaries()), [release_summary(release)])
+        self.assertEqual([call.args[0] for call in delay.call_args_list], [1, 2])
+        self.assertEqual(api.call_args_list, [api.call_args] * 3)
+
+    def test_exhausted_summary_page_timeout_fails_discovery(self):
+        github = releases.GitHub()
+        timeout = releases.GitHubError("Gateway Timeout (HTTP 504)", 504)
+        responses = [
+            [catalog_release("0.9.0")],
+            summary_page([upstream_release("0.10.0")], "second-page"),
+            timeout, timeout, timeout,
+        ]
+        with patch.object(releases, "sleep"), patch.object(github, "api", side_effect=responses) as api:
+            with self.assertRaisesRegex(releases.GitHubError, r"openai/codex release summaries page 2:.*HTTP 504"):
+                releases.discover(github, REPOSITORY)
+        self.assertEqual(api.call_args_list[2:], [api.call_args] * 3)
+        self.assertEqual(api.call_args.args[1]["variables"]["after"], "second-page")
 
 
 if __name__ == "__main__":

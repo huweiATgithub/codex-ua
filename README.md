@@ -147,11 +147,12 @@ periodic recollection of an unchanged Codex version.
 
 [Collect and publish](.github/workflows/collect.yml) runs hourly at minute 17 UTC.
 The first automatic run collects the current stable version. Subsequent runs
-collect the oldest missing stable version from that initial version onward;
-later historical backfills do not expand automatic collection backward.
-Alpha releases, unrelated upstream releases, and releases without all
-required binary assets are excluded. A later check retries incomplete upstream
-publication or failed collection.
+collect the highest missing stable version with all required binaries. Discovery
+reads upstream release summaries ten at a time back to the initial version and
+checks binaries by tag in descending version order. Later historical backfills
+do not expand automatic collection backward. Alpha releases and unrelated tags
+are excluded. A later check retries incomplete upstream publication or failed
+collection.
 
 Run a manual collection or historical backfill with:
 

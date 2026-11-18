@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from time import sleep
 
 try:
     from .matrix import MatrixError, PublicationMatrices, StableVersion, TARGETS, publication_matrices, unique_object
@@ -24,6 +25,16 @@ MATRIX_ASSET = "ua-matrix.json"
 RUN_ASSET = "ua-matrix.run.json"
 ASSETS = (MATRIX_ASSET, RUN_ASSET)
 UPSTREAM = "openai/codex"
+RELEASE_SUMMARIES_QUERY = """
+query($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    releases(first: 10, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes { tag_name: tagName draft: isDraft prerelease: isPrerelease }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
 
 
 class ReleaseError(RuntimeError):
@@ -55,9 +66,19 @@ class GitHub:
             arguments.extend(["--input", "-"])
         return json.loads(self.command(arguments, payload))
 
+    def read_api(self, endpoint: str, *, query: dict | None = None, context: str | None = None):
+        method = "GET" if query is None else "POST"
+        for delay in (1, 2, None):
+            try:
+                return self.api(endpoint, query, method)
+            except GitHubError as error:
+                if error.status != 504 or delay is None:
+                    raise GitHubError(f"{context or endpoint}: {error}", error.status) from error
+                sleep(delay)
+
     def by_tag(self, repository: str, tag: str) -> dict | None:
         try:
-            return self.api(f"repos/{repository}/releases/tags/{tag}")
+            return self.read_api(f"repos/{repository}/releases/tags/{tag}")
         except GitHubError as error:
             if error.status == 404:
                 return None
@@ -66,11 +87,31 @@ class GitHub:
     def releases(self, repository: str):
         page = 1
         while True:
-            values = self.api(f"repos/{repository}/releases?per_page=100&page={page}")
+            values = self.read_api(f"repos/{repository}/releases?per_page=100&page={page}")
             yield from values
             if len(values) < 100:
                 return
             page += 1
+
+    def upstream_release_summaries(self):
+        owner, name = UPSTREAM.split("/")
+        cursor = None
+        page_number = 1
+        while True:
+            context = f"{UPSTREAM} release summaries page {page_number}"
+            response = self.read_api("graphql", query={
+                "query": RELEASE_SUMMARIES_QUERY,
+                "variables": {"owner": owner, "name": name, "after": cursor},
+            }, context=context)
+            page = response["data"]["repository"]["releases"]
+            yield from page["nodes"]
+            if not page["pageInfo"]["hasNextPage"]:
+                return
+            next_cursor = page["pageInfo"]["endCursor"]
+            if not next_cursor or next_cursor == cursor:
+                raise ReleaseError(f"{context}: GitHub returned no advancing cursor")
+            cursor = next_cursor
+            page_number += 1
 
 
 def version_key(version: StableVersion) -> tuple[int, ...]:
@@ -132,46 +173,53 @@ def missing_binary_assets(release: dict) -> list[str]:
     return sorted(expected - available)
 
 
+def newest_collectable(github: GitHub, completed: dict[str, CompletedRelease]) -> StableVersion | None:
+    # A later manual historical backfill must not move the automatic collection
+    # floor backward from the first published catalog version.
+    seed = min(completed.values(), key=lambda item: item.published_at).version
+    candidates = set()
+    for summary in github.upstream_release_summaries():
+        version = release_version(summary, "rust-v")
+        if version == seed:
+            break
+        if version and version.value not in completed and version_key(version) >= version_key(seed):
+            candidates.add(version)
+    else:
+        raise ReleaseError(f"Upstream history no longer contains collected rust-v{seed.value}")
+
+    for version in sorted(candidates, key=version_key, reverse=True):
+        upstream = github.by_tag(UPSTREAM, f"rust-v{version.value}")
+        if upstream is not None and release_version(upstream, "rust-v") == version and not missing_binary_assets(upstream):
+            return version
+    return None
+
+
 def discover(github: GitHub, repository: str, requested: str | None = None) -> dict:
     requested = requested or None
     version = StableVersion.parse(requested) if requested is not None else None
     completed = completed_catalog(github, repository)
     if version and version.value in completed:
         return {"needed": False, "version": "", "reason": f"v{version.value} is already published"}
-    if version:
-        upstream = github.by_tag(UPSTREAM, f"rust-v{version.value}")
-        if upstream is None or release_version(upstream, "rust-v") != version:
-            raise ReleaseError(f"No published stable Codex release rust-v{version.value}")
-    elif not completed:
-        upstream = github.api(f"repos/{UPSTREAM}/releases/latest")
-        version = release_version(upstream, "rust-v")
+    if version is None and completed:
+        version = newest_collectable(github, completed)
         if version is None:
-            raise ReleaseError("Upstream latest release is not a published stable rust-vX.Y.Z release")
-    else:
-        # A later manual historical backfill must not move the automatic
-        # collection floor backward from the first published catalog version.
-        oldest = min(completed.values(), key=lambda item: item.published_at).version
-        candidates = []
-        boundary_found = False
-        for upstream in github.releases(UPSTREAM):
-            candidate = release_version(upstream, "rust-v")
-            if candidate is not None and version_key(candidate) >= version_key(oldest):
-                if candidate.value not in completed and not missing_binary_assets(upstream):
-                    candidates.append((candidate, upstream))
-                if candidate == oldest:
-                    boundary_found = True
-                    break
-        if not boundary_found:
-            raise ReleaseError(f"Upstream history no longer contains collected rust-v{oldest.value}")
-        if not candidates:
             return {"needed": False, "version": "", "reason": "No uncollected stable releases with complete binaries"}
-        version, upstream = min(candidates, key=lambda item: version_key(item[0]))
-    missing = missing_binary_assets(upstream)
-    if missing:
-        reason = f"rust-v{version.value} is missing required binaries: {', '.join(missing)}"
-        if requested:
-            raise ReleaseError(reason)
-        return {"needed": False, "version": "", "reason": reason}
+    else:
+        if version:
+            upstream = github.by_tag(UPSTREAM, f"rust-v{version.value}")
+            if upstream is None or release_version(upstream, "rust-v") != version:
+                raise ReleaseError(f"No published stable Codex release rust-v{version.value}")
+        else:
+            upstream = github.read_api(f"repos/{UPSTREAM}/releases/latest")
+            version = release_version(upstream, "rust-v")
+            if version is None:
+                raise ReleaseError("Upstream latest release is not a published stable rust-vX.Y.Z release")
+        missing = missing_binary_assets(upstream)
+        if missing:
+            reason = f"rust-v{version.value} is missing required binaries: {', '.join(missing)}"
+            if requested:
+                raise ReleaseError(reason)
+            return {"needed": False, "version": "", "reason": reason}
     return {"needed": True, "version": version.value, "reason": "Stable release has no published matrix"}
 
 

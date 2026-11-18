@@ -73,6 +73,17 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(env[name], value)
             self.assertEqual(Path(env["CODEX_HOME"]), Path(temporary) / "codex-home")
 
+    def test_native_windows_client_has_an_existing_private_temp_directory(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(collect, "os") as windows:
+            directory = Path(temporary)
+            windows.name = "nt"
+            windows.environ = {"TERM_PROGRAM": "herdr", "TEMP": str(directory / "unavailable")}
+            env = child_environment(directory, native_terminal=True)
+            for name in ("TMPDIR", "TEMP", "TMP"):
+                self.assertEqual(Path(env[name]), directory / "tmp")
+                self.assertTrue(Path(env[name]).is_dir())
+            self.assertEqual(env["TERM_PROGRAM"], "herdr")
+
     def test_native_capture_rejects_nonterminal_before_launch(self):
         with patch("scripts.collect.os.isatty", return_value=False), patch("scripts.collect.subprocess.run") as run:
             with self.assertRaisesRegex(RuntimeError, "application's real PTY"):

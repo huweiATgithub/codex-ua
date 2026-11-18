@@ -113,7 +113,7 @@ are needed.
 Application Profiles launch the downloaded native terminal application first:
 Windows Terminal in portable mode, VS Code with an integrated terminal, or a
 named Herdr server with its native PTY. A sampler inside that terminal starts
-`codex` and `codex exec`, preserving the application's complete environment and
+`codex` and `codex exec`, preserving the application's terminal environment and
 standard input/output. The application responds to terminal queries itself;
 the sampler does not create a substitute PTY or set terminal identity variables.
 Only the actual requests' User-Agent and originator headers are recorded.

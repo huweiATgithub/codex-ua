@@ -113,6 +113,10 @@ def child_environment(directory, *, native_terminal=False):
         # The application was isolated before launch. Preserve every signal it
         # supplied, including future terminal detection mechanisms.
         env["CODEX_HOME"] = str(codex_home)
+        if os.name == "nt":
+            # Win32 can resolve the pane's temporary path to an uncreated
+            # profile directory. SQLite needs an existing directory at launch.
+            env.update({name: isolated[name] for name in ("TMPDIR", "TEMP", "TMP")})
     else:
         env.update(isolated)
     # Both clients receive a loopback-only provider separately.
